@@ -19,6 +19,68 @@ type ArticleWithRelations = Prisma.articlesGetPayload<{
     isLiked?: boolean
 };
 
+type ArticleWithFeedMeta = Prisma.articlesGetPayload<{
+    include: typeof listArticleInclude
+}> & {
+    isLiked?: boolean
+};
+
+// 将 article_likes 关系数据序列化为前端点赞人列表所需的结构
+function serializeLiker(like: {
+    user_id: bigint;
+    user: { id: bigint; username: string; nickname: string | null; avatar: string | null };
+}) {
+    return {
+        id: like.user_id.toString(),
+        displayName: like.user.nickname || like.user.username,
+        username: like.user.username,
+        avatar: like.user.avatar
+    };
+}
+
+// 将 comments 关系数据序列化为与 GET /comments/:articleId 一致的扁平结构
+function serializeFeedComment(comment: {
+    id: bigint;
+    content: string;
+    created_at: Date;
+    updated_at: Date;
+    article_id: bigint;
+    user_id: bigint;
+    parent_id: bigint | null;
+    user: { id: bigint; username: string; nickname: string | null; avatar: string | null };
+    parent: {
+        user: { nickname: string | null; username: string };
+    } | null;
+}) {
+    const parentDisplayName = comment.parent?.user.nickname ?? comment.parent?.user.username ?? null;
+    return {
+        id: comment.id.toString(),
+        content: comment.content,
+        created_at: comment.created_at,
+        updated_at: comment.updated_at,
+        article_id: comment.article_id.toString(),
+        user_id: comment.user_id.toString(),
+        parent_id: comment.parent_id?.toString() ?? null,
+        parent_displayName: parentDisplayName,
+        user: {
+            ...comment.user,
+            id: comment.user.id.toString()
+        }
+    };
+}
+
+// 序列化列表场景下的文章：在基础字段之上附加 likers / comments / comment_total
+function serializeFeedArticle(article: ArticleWithFeedMeta) {
+    const { article_likes, comments, _count, ...rest } = article;
+    const base = serializeArticle({ ...rest, isLiked: article.isLiked });
+    return {
+        ...base,
+        likers: (article_likes ?? []).map(serializeLiker),
+        comments: (comments ?? []).map(serializeFeedComment),
+        comment_total: _count?.comments ?? 0
+    };
+}
+
 const articleInclude = {
     user: {
         select: {
@@ -39,6 +101,73 @@ const articleInclude = {
             tag_id: 'asc'
         }
     }
+} satisfies Prisma.articlesInclude;
+
+// 列表场景额外带出的聚合数据：每篇文章的点赞人预览 + 前 N 条评论 + 评论总数
+// 目的是让首页信息流一次请求即可渲染，避免前端对每篇文章再发起点赞/评论请求（N+1 瀑布）
+const FEED_COMMENT_PAGE_SIZE = 3;
+
+const feedMetaInclude = {
+    article_likes: {
+        include: {
+            user: {
+                select: {
+                    id: true,
+                    username: true,
+                    nickname: true,
+                    avatar: true
+                }
+            }
+        },
+        orderBy: {
+            created_at: 'desc'
+        }
+    },
+    comments: {
+        where: {
+            deleted_at: null
+        },
+        orderBy: {
+            created_at: 'asc'
+        },
+        take: FEED_COMMENT_PAGE_SIZE,
+        include: {
+            user: {
+                select: {
+                    id: true,
+                    username: true,
+                    nickname: true,
+                    avatar: true
+                }
+            },
+            parent: {
+                include: {
+                    user: {
+                        select: {
+                            id: true,
+                            username: true,
+                            nickname: true,
+                            avatar: true
+                        }
+                    }
+                }
+            }
+        }
+    },
+    _count: {
+        select: {
+            comments: {
+                where: {
+                    deleted_at: null
+                }
+            }
+        }
+    }
+} satisfies Prisma.articlesInclude;
+
+const listArticleInclude = {
+    ...articleInclude,
+    ...feedMetaInclude
 } satisfies Prisma.articlesInclude;
 
 function normalizeTagNames(input: ArticleTagInput) {
@@ -283,8 +412,8 @@ router.get('/', optionalAuthMiddleware, async (req: Request, res: Response) => {
                 { created_at: 'desc' }, //按时间发布降序排列
                 { id: 'desc' }
             ],
-            //同时查询作者部分信息、文章的相关图片/视频/标签
-            include: articleInclude
+            //列表场景一次性带出作者、图片/视频/标签、点赞人预览、前 N 条评论与评论总数
+            include: listArticleInclude
         })
 
         // 动态计算用户对文章的喜欢状态
@@ -327,8 +456,8 @@ router.get('/', optionalAuthMiddleware, async (req: Request, res: Response) => {
         const totalArticles = await prisma.articles.count({
             where: where
         });
-        // 处理数据，转化BigInt
-        const responseArticles = articleWithLikeStatus.map(serializeArticle);
+        // 处理数据，转化BigInt，并附加点赞人/评论聚合数据
+        const responseArticles = articleWithLikeStatus.map(serializeFeedArticle);
 
         res.status(200).json({
             data: responseArticles,

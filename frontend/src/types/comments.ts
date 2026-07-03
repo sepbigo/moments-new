@@ -17,10 +17,11 @@ export interface Comment {
     id: string;
     article_id: string;
     user_id: string;
-    parent_id: string;
-    parent_displayName:string
+    parent_id: string | null;
+    parent_displayName: string | null;
     content: string;
     created_at: string;
+    updated_at?: string;
     user: {
         id: string;
         username: string;

@@ -59,6 +59,30 @@ export const useFeedStore = defineStore('feed', () => {
         return params
     }
 
+    // 将列表接口聚合返回的 likers / comments / comment_total 写入对应的 map
+    // 这样首页信息流一次请求即可渲染，不再对每篇文章单独请求点赞人和评论
+    const applyArticleMeta = (list: articleData[]) => {
+        for (const article of list) {
+            if (article.likers) {
+                articleLikesMap.value[article.id] = article.likers
+            }
+            if (article.comments) {
+                commentsMap.value[article.id] = article.comments
+            }
+            // 用聚合返回的评论总数初始化评论分页状态，与初始评论列表保持一致
+            const total = article.comment_total ?? 0
+            const loaded = article.comments?.length ?? 0
+            commentPagination.value[article.id] = {
+                page: 1,
+                pageSize: 3,
+                total,
+                hasMore: loaded < total,
+                isLoading: false,
+                remaining: Math.max(total - loaded, 0)
+            }
+        }
+    }
+
     // 加载初始文章
     const fetchInitialArticles = async () => {
         // if (articles.value.length > 0) return //防止重复加载文章
@@ -68,6 +92,7 @@ export const useFeedStore = defineStore('feed', () => {
 
             const response = await getArticle(buildArticleParams(1), guestId)
             articles.value = response.data.data
+            applyArticleMeta(articles.value)
             page.value = 1
             hasMore.value = articles.value.length < response.data.total
             return true
@@ -97,6 +122,7 @@ export const useFeedStore = defineStore('feed', () => {
                 const newArticles = response.data.data.filter((a: articleData) => !existingIds.has(a.id));
 
                 articles.value.push(...newArticles);
+                applyArticleMeta(newArticles)
                 page.value += 1
 
                 hasMore.value = articles.value.length < response.data.total
