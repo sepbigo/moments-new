@@ -1,6 +1,7 @@
 import axios from "axios";
-import { PrismaClient } from "@prisma/client";
-const prisma = new PrismaClient();
+import { prisma } from "../lib/prisma.js";
+import { Logger } from "../utils/logger.js";
+const logger = new Logger('VerifyService');
 export const verifyHcaptcha = async (captchaToke) => {
     try {
         // 获取hcaptcha的用户密钥
@@ -19,11 +20,11 @@ export const verifyHcaptcha = async (captchaToke) => {
                 'Content-Type': 'application/x-www-form-urlencoded'
             }
         });
-        console.log(result.data);
+        logger.debug(`hCaptcha 验证结果：${result.data.success}`);
         return result.data.success;
     }
     catch (error) {
-        console.error('hCaptcha 验证失败：', error);
+        logger.error('hCaptcha 验证失败', error instanceof Error ? error.stack : String(error));
         return false;
     }
 };
