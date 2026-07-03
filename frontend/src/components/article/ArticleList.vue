@@ -12,22 +12,11 @@ const scrollTrigger = ref<HTMLElement | null>(null)
 let observer: IntersectionObserver | null = null
 const isShowInputMap = ref<Record<number, boolean>>({})
 
-const fetchNewArticleData = async (articlesToFetch: any[]) => {
-    for (const article of articlesToFetch) {
-        if (!feedStore.articleLikesMap[article.id]) {
-            await feedStore.fetchArticleLikers(article.id);
-        }
-        if (!feedStore.commentsMap[article.id]) {
-            await feedStore.fetchInitialComments(article.id);
-        }
-    }
-}
 // 组件挂载的时候执行
 onMounted(async () => {
     const id = messageStore.show('正在加载文章', 'loading')
     const isSuccess = await feedStore.fetchInitialArticles()
     if (isSuccess) {
-        await fetchNewArticleData(feedStore.articles);
         messageStore.update(id, { type: 'success', text: '文章加载成功', duration: 2000 })
     } else {
         messageStore.update(id, { type: 'error', text: '文章加载失败', duration: 2000 })
@@ -40,14 +29,11 @@ onMounted(async () => {
                 console.log('滚动到底部，加载更多...');
                 const id = messageStore.show('正在加载文章', 'loading')
 
-                const articlesBeforeFetch = feedStore.articles.length
                 const res = await feedStore.fetchMoreArticles()
                 // 消息通知
                 if (res?.status === 0) {
                     messageStore.update(id, { type: 'info', text: '没有更多文章了', duration: 2000 })
                 } else if (res?.status === 1) {
-                    const newArticles = feedStore.articles.slice(articlesBeforeFetch)
-                    await fetchNewArticleData(newArticles)
                     messageStore.update(id, { type: 'success', text: '文章加载成功', duration: 2000 })
                 } else {
                     messageStore.update(id, { type: 'error', text: '文章加载失败', duration: 2000 })
@@ -89,14 +75,10 @@ async function handleSendReply(payload: { articleId: number, content: string, pa
 function handleLoadMoreComments(articleId: number) {
     feedStore.fetchMoreComments(articleId)
 }
-async function loadArticleMeta() {
-    await fetchNewArticleData(feedStore.articles)
-}
 async function handleTagFilter(tag: string) {
     const id = messageStore.show(`正在加载 #${tag}`, 'loading')
     const isSuccess = await feedStore.setActiveTag(tag)
     if (isSuccess) {
-        await loadArticleMeta()
         messageStore.update(id, { type: 'success', text: `已筛选 #${tag}`, duration: 2000 })
     } else {
         messageStore.update(id, { type: 'error', text: '标签筛选失败', duration: 2000 })
@@ -106,7 +88,6 @@ async function clearTagFilter() {
     const id = messageStore.show('正在加载文章', 'loading')
     const isSuccess = await feedStore.clearActiveTag()
     if (isSuccess) {
-        await loadArticleMeta()
         messageStore.update(id, { type: 'success', text: '已显示全部文章', duration: 2000 })
     } else {
         messageStore.update(id, { type: 'error', text: '文章加载失败', duration: 2000 })

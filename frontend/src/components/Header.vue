@@ -126,41 +126,17 @@ watch(isLogin, (value) => {
 </script>
 
 <template>
-  
+
   <div class="header">
     <div class="background">
       <!-- 如果设置为图片 -->
       <img v-if="isImage" :src="backgroundPath" alt="顶部图片" />
       <!-- 如果设置为视频 -->
-      <video
-        v-else-if="isVideo"
-        ref="backgroundVideoRef"
-        :src="backgroundPath"
-        autoplay
-        muted
-        loop
-        playsinline
-        webkit-playsinline
-        x5-playsinline
-        x5-video-player-type="h5"
-        x5-video-player-fullscreen="false"
-        preload="auto"
-      />
+      <video v-else-if="isVideo" ref="backgroundVideoRef" :src="backgroundPath" autoplay muted loop playsinline
+        webkit-playsinline x5-playsinline x5-video-player-type="h5" x5-video-player-fullscreen="false" preload="auto" />
       <!-- 其他 -->
-      <video
-        v-else
-        ref="backgroundVideoRef"
-        :src="defaultBackground"
-        autoplay
-        muted
-        loop
-        playsinline
-        webkit-playsinline
-        x5-playsinline
-        x5-video-player-type="h5"
-        x5-video-player-fullscreen="false"
-        preload="auto"
-      />
+      <video v-else ref="backgroundVideoRef" :src="defaultBackground" autoplay muted loop playsinline webkit-playsinline
+        x5-playsinline x5-video-player-type="h5" x5-video-player-fullscreen="false" preload="auto" />
     </div>
     <!-- 顶部导航栏 -->
     <div class="top-bar-wrapper">
@@ -168,8 +144,8 @@ watch(isLogin, (value) => {
 
         <div class="top-bar-left">
           <slot name="left" :isBlurred="isBlurred">
-            <Icon :class="['icon', { blurred: isBlurred }]" title="登录/注册">
-              <UserCircleRegular @click="authStore.showAuth" v-if="!isLogin" />
+            <Icon :class="['icon', { blurred: isBlurred }]" title="登录/注册" v-if="!isLogin">
+              <UserCircleRegular @click="authStore.showAuth" />
             </Icon>
           </slot>
         </div>
