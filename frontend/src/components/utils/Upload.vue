@@ -98,6 +98,11 @@ const handleFileChange = (event: Event) => {
         selectedFiles.value = []
         return messageStore.show(`只能上传图片/视频`, 'error', 4000)
     }
+    // 图片类型文章只能上传图片
+    if (props.articleType === 1 && merged.some(i => !i.file.type.startsWith('image/'))) {
+        selectedFiles.value = []
+        return messageStore.show('图片类型文章只能上传图片', 'error', 4000)
+    }
     if (props.uploadRole === 'video' && merged.some(i => !i.file.type.startsWith('video/'))) {
         selectedFiles.value = []
         return messageStore.show('这里只能上传视频文件', 'error', 4000)
@@ -208,8 +213,15 @@ const previewVideos = computed<articleVideoItem[]>(() =>
 const inputAccept = computed(() => {
     if (props.uploadRole === 'video') return 'video/*'
     if (props.uploadRole === 'cover') return 'image/*'
+    // media 角色：按文章类型限制，图片类型只接受图片，视频类型只接受视频
+    if (props.articleType === 1) return 'image/*'
+    if (props.articleType === 2) return 'video/*'
     return 'image/*,video/*'
 })
+// 实际可选数量：media 角色按全局配置，video/cover 角色固定为 1
+const effectiveUploadNumber = computed(() =>
+    props.uploadRole === 'media' ? Number(defaultStore.configs.upload_number) : 1
+)
 
 function handleImagesUpdate(newOrderedImages: articleImageItem[]) {
     // `newOrderedImages` 是 Media 组件排序后返回的图片数组。
@@ -256,7 +268,7 @@ defineExpose({ performUpload, hasSelectedFiles, hasSelectedVideo });
     <div class="upload-container">
 
         <Media :article-images="previewImages" :article-videos="previewVideos" :upload="true"
-            :upload-number="defaultStore.configs.upload_number" @remove:image="handleRemoveImage"
+            :upload-number="String(effectiveUploadNumber)" @remove:image="handleRemoveImage"
             @update:articleImages="handleImagesUpdate" @add:file="clickAddFile">
         </Media>
 
