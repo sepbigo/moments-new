@@ -1,4 +1,4 @@
-FROM node:20-alpine
+FROM node:22-alpine
 
 WORKDIR /app
 
@@ -16,4 +16,4 @@ COPY .env.docker ./
 EXPOSE 9889
 
 # 执行数据库初始化并启动项目
-CMD ["sh", "-c", "pnpm run db:install && node dist/index.js"]
+CMD ["sh", "-c", "pnpm run db:install && node dist/bootstrap.js"]
