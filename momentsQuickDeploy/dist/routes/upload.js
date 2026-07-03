@@ -1,25 +1,27 @@
 import { Router } from "express";
 import multer from 'multer';
-import { S3Client } from "@aws-sdk/client-s3";
-import multerS3 from 'multer-s3';
 import path from "path";
 import { nanoid } from "nanoid";
 import { FileService, publicRootPath } from "../services/file.service.js";
 import { authMiddleware } from "../middleware/authMiddleware.js";
-import { PrismaClient } from "@prisma/client";
-import { CONFIG_CACHE } from "../services/config.service.js";
-const configs = CONFIG_CACHE;
-const prisma = new PrismaClient();
+import { prisma } from "../lib/prisma.js";
+import { getConfigCache } from "../services/config.service.js";
+import { Logger } from "../utils/logger.js";
 const router = Router();
+const logger = new Logger('UploadRoute');
 /**
  * @description：本地存储
  * @default：可设置文件大小、上传数量、上传目录、文件名格式
  * @feature ：fileSize 、 fileNumber S3配置 放入数据库中
  */
-// 文件大小 byte
-const fileSize = Number(configs.upload_size) * 1024 * 1024;
-// 文件数量
-const fileNumber = Number(configs.upload_number);
+const DEFAULT_FILE_SIZE_MB = 5;
+const DEFAULT_FILE_NUMBER = 9;
+function getFileSize(configs) {
+    return (Number(configs.upload_size) || DEFAULT_FILE_SIZE_MB) * 1024 * 1024;
+}
+function getFileNumber(configs) {
+    return Number(configs.upload_number) || DEFAULT_FILE_NUMBER;
+}
 // 允许上传的图片类型
 const allowedImageTypes = [
     'image/jpeg',
@@ -80,21 +82,33 @@ const mediaFilter = (req, file, cb) => {
         cb(new Error('不支持的文件类型! 仅支持图片和视频。'), false);
     }
 };
-// 构建中间件
-const upload = multer({
-    storage,
-    // 限制单个文件大小
-    limits: {
-        fileSize,
-    },
-    // 文件类型过滤
-    fileFilter: mediaFilter
-});
+function createLocalUpload(configs) {
+    return multer({
+        storage,
+        // 限制单个文件大小
+        limits: {
+            fileSize: getFileSize(configs),
+        },
+        // 文件类型过滤
+        fileFilter: mediaFilter
+    });
+}
+async function localUploadMiddleware(req, res, next) {
+    try {
+        const configs = await getConfigCache();
+        createLocalUpload(configs).array('files', getFileNumber(configs))(req, res, next);
+    }
+    catch (error) {
+        next(error);
+    }
+}
 // 普通文件上传
-router.post('/', authMiddleware, upload.array('files', fileNumber), async (req, res) => {
+router.post('/', authMiddleware, localUploadMiddleware, async (req, res) => {
     // 上传文件信息
     // console.log(req.files);
     const articleId = req.body.articleId;
+    const articleType = Number(req.body.articleType ?? 0);
+    const uploadRole = req.body.uploadRole;
     const files = req.files;
     try {
         if (!files || files.length === 0) {
@@ -111,11 +125,35 @@ router.post('/', authMiddleware, upload.array('files', fileNumber), async (req, 
         //     UploadService.moveTemporaryFile(file)
         // )
         // const filePaths = await Promise.all(uploadPromises)
-        const processPromises = files.map(async (file, index) => {
+        const fileUrlMap = new Map();
+        files.forEach(file => {
             const relativePath = path.relative(publicRootPath, file.path);
-            const urlPath = '/' + relativePath.split(path.sep).join('/');
-            // 检查文件类型，如果是图片则写入数据库
-            if (allowedImageTypes.includes(file.mimetype)) {
+            fileUrlMap.set(file, '/' + relativePath.split(path.sep).join('/'));
+        });
+        const videoThumbnailUrl = articleType === 2
+            ? fileUrlMap.get(files.find(file => allowedImageTypes.includes(file.mimetype))) || ''
+            : '';
+        let videoSortOrder = 0;
+        const processPromises = files.map(async (file, index) => {
+            const urlPath = fileUrlMap.get(file);
+            if (allowedImageTypes.includes(file.mimetype) && articleType === 2 && uploadRole === 'cover') {
+                try {
+                    const video = await prisma.article_videos.findFirst({
+                        where: { article_id: BigInt(articleId) },
+                        orderBy: { sort_order: 'asc' }
+                    });
+                    if (video) {
+                        await prisma.article_videos.update({
+                            where: { id: video.id },
+                            data: { thumbnail_url: urlPath }
+                        });
+                    }
+                }
+                catch (error) {
+                    console.error(`数据库写入视频封面 ${urlPath} 失败:`, error);
+                }
+            }
+            else if (allowedImageTypes.includes(file.mimetype) && articleType !== 2) {
                 try {
                     await prisma.article_images.create({
                         data: {
@@ -135,7 +173,9 @@ router.post('/', authMiddleware, upload.array('files', fileNumber), async (req, 
                     await prisma.article_videos.create({
                         data: {
                             video_url: urlPath,
-                            sort_order: index
+                            thumbnail_url: videoThumbnailUrl,
+                            sort_order: videoSortOrder++,
+                            article_id: BigInt(articleId)
                         }
                     });
                 }
@@ -156,41 +196,64 @@ router.post('/', authMiddleware, upload.array('files', fileNumber), async (req, 
     }
 });
 // S3文件上传
-// 配置s3客户端
-const s3 = new S3Client({
-    // aws可为空， r2等兼容服务必须填写
-    endpoint: configs.upload_s3_endpoint || undefined,
-    // 区域
-    region: configs.upload_s3_region || 'auto',
-    // 凭证
-    credentials: {
-        accessKeyId: configs.upload_s3_id,
-        secretAccessKey: configs.upload_s3_secret
+// S3 相关依赖较重，按需动态加载，避免拖慢普通 pnpm dev 启动
+async function createS3Upload(configs) {
+    const [{ S3Client }, multerS3Module] = await Promise.all([
+        import("@aws-sdk/client-s3"),
+        import("multer-s3"),
+    ]);
+    const multerS3 = multerS3Module.default;
+    const endpoint = configs.upload_s3_endpoint?.trim() || undefined;
+    const configuredRegion = configs.upload_s3_region?.trim();
+    const region = endpoint ? (configuredRegion || 'auto') : (configuredRegion && configuredRegion !== 'auto' ? configuredRegion : 'us-east-1');
+    if (!endpoint && configuredRegion === 'auto') {
+        logger.warn('S3 region "auto" requires a custom endpoint. Falling back to "us-east-1" for AWS S3.');
     }
-});
-const s3Upload = multer({
-    storage: multerS3({
-        s3: s3,
-        bucket: configs.upload_s3_bucketname || "defaultName",
-        contentType: multerS3.AUTO_CONTENT_TYPE,
-        key: function (req, file, cb) {
-            try {
-                const date = new Date();
-                const year = date.getFullYear().toString();
-                const month = String(date.getMonth() + 1).padStart(2, '0');
-                const day = date.getDate().toString();
-                const safeOriginalName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '');
-                const finalKey = `upload/${year}/${month}/${day}_${nanoid(5)}_${safeOriginalName}`;
-                cb(null, finalKey);
-            }
-            catch (error) {
-                cb(error);
-            }
+    const s3 = new S3Client({
+        // aws可为空， r2等兼容服务必须填写
+        endpoint,
+        // 区域：R2 等兼容服务常用 auto；AWS S3 不能使用 auto
+        region,
+        // 凭证
+        credentials: {
+            accessKeyId: configs.upload_s3_id,
+            secretAccessKey: configs.upload_s3_secret
         }
-    }),
-    limits: { fileSize },
-    fileFilter: mediaFilter,
-});
+    });
+    return multer({
+        storage: multerS3({
+            s3: s3,
+            bucket: configs.upload_s3_bucketname || "defaultName",
+            contentType: multerS3.AUTO_CONTENT_TYPE,
+            key: function (req, file, cb) {
+                try {
+                    const date = new Date();
+                    const year = date.getFullYear().toString();
+                    const month = String(date.getMonth() + 1).padStart(2, '0');
+                    const day = date.getDate().toString();
+                    const safeOriginalName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '');
+                    const finalKey = `upload/${year}/${month}/${day}_${nanoid(5)}_${safeOriginalName}`;
+                    cb(null, finalKey);
+                }
+                catch (error) {
+                    cb(error);
+                }
+            }
+        }),
+        limits: { fileSize: getFileSize(configs) },
+        fileFilter: mediaFilter,
+    });
+}
+async function s3UploadMiddleware(req, res, next) {
+    try {
+        const configs = await getConfigCache();
+        const upload = await createS3Upload(configs);
+        upload.array('files', getFileNumber(configs))(req, res, next);
+    }
+    catch (error) {
+        next(error);
+    }
+}
 /**
  * @description : 最初配置
 router.post('/s3', authMiddleware, s3Upload.array('files', fileNumber), (req: Request, res: Response) => {
@@ -206,27 +269,45 @@ router.post('/s3', authMiddleware, s3Upload.array('files', fileNumber), (req: Re
     res.json({ status: true, message: `成功上传 ${filePaths.length} 个文件`, paths: filePaths })
 })
 */
-router.post('/s3', authMiddleware, s3Upload.array('files', fileNumber), async (req, res) => {
+router.post('/s3', authMiddleware, s3UploadMiddleware, async (req, res) => {
     const files = req.files;
     const articleId = req.body.articleId;
-    console.log('@文章id', articleId);
+    const articleType = Number(req.body.articleType ?? 0);
+    const uploadRole = req.body.uploadRole;
+    logger.debug(`S3 upload article id: ${articleId}`);
     if (!files || files.length === 0) {
         return res.status(400).json({ status: false, message: '没有文件被上传' });
     }
     try {
-        // 使用 map 创建一个 Promise 数组，处理数据库写入和 URL 格式化
-        const processPromises = files.map(async (file, index) => {
-            // 1. 获取上传信息
-            // 假设 Multer S3 存储引擎将 key 和 location 附加到 file 对象上
+        const configs = await getConfigCache();
+        const getFileUrl = (file) => {
             const fileKey = file.key;
             const s3Location = file.location;
-            // 2. 使用 CONFIG_CACHE 格式化 URL
-            // 访问已缓存的配置对象，这是瞬时内存读取
-            const customDomain = CONFIG_CACHE.upload_s3_domain;
-            const fileUrl = customDomain
-                ? `https://${customDomain}/${fileKey}`
-                : s3Location;
-            if (allowedImageTypes.includes(file.mimetype)) {
+            const customDomain = configs.upload_s3_domain;
+            return customDomain ? `https://${customDomain}/${fileKey}` : s3Location;
+        };
+        const fileUrlMap = new Map();
+        files.forEach(file => fileUrlMap.set(file, getFileUrl(file)));
+        const videoThumbnailUrl = articleType === 2
+            ? fileUrlMap.get(files.find(file => allowedImageTypes.includes(file.mimetype))) || ''
+            : '';
+        let videoSortOrder = 0;
+        // 使用 map 创建一个 Promise 数组，处理数据库写入和 URL 格式化
+        const processPromises = files.map(async (file, index) => {
+            const fileUrl = fileUrlMap.get(file);
+            if (allowedImageTypes.includes(file.mimetype) && articleType === 2 && uploadRole === 'cover') {
+                const video = await prisma.article_videos.findFirst({
+                    where: { article_id: BigInt(articleId) },
+                    orderBy: { sort_order: 'asc' }
+                });
+                if (video) {
+                    await prisma.article_videos.update({
+                        where: { id: video.id },
+                        data: { thumbnail_url: fileUrl }
+                    });
+                }
+            }
+            else if (allowedImageTypes.includes(file.mimetype) && articleType !== 2) {
                 await prisma.article_images.create({
                     data: {
                         image_url: fileUrl,
@@ -239,7 +320,9 @@ router.post('/s3', authMiddleware, s3Upload.array('files', fileNumber), async (r
                 await prisma.article_videos.create({
                     data: {
                         video_url: fileUrl,
-                        sort_order: index
+                        thumbnail_url: videoThumbnailUrl,
+                        sort_order: videoSortOrder++,
+                        article_id: BigInt(articleId)
                     }
                 });
             }
@@ -251,7 +334,7 @@ router.post('/s3', authMiddleware, s3Upload.array('files', fileNumber), async (r
         res.json({ status: true, message: `成功上传 ${filePaths.length} 个文件`, paths: filePaths });
     }
     catch (error) {
-        console.error('@S3/R2 上传处理时出错：', error);
+        logger.error('S3/R2 上传处理时出错', error instanceof Error ? error.stack : String(error));
         res.status(500).json({ status: false, message: '文件处理失败' });
     }
 });

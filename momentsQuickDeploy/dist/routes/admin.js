@@ -1,10 +1,10 @@
 import { Router } from "express";
-import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma.js';
 import { adminMiddleware } from "../middleware/adminMiddleware.js";
 import { authMiddleware } from "../middleware/authMiddleware.js";
 import { buildConfigWhere, formatConfigResponse, parseConfigQuery } from "../services/config-query.service.js";
+import { noticeService } from "../services/notice.service.js";
 const router = Router();
-const prisma = new PrismaClient();
 // 获取（未删除）用户数：用户总数、已激活用户数、未激活用户数
 router.get('/user', authMiddleware, adminMiddleware, async (req, res) => {
     let totalCount, activeCount, negativeCount;
@@ -73,6 +73,37 @@ router.get('/comment', authMiddleware, adminMiddleware, async (req, res) => {
         res.status(500).json({ message: '获取评论数失败', error });
     }
     res.status(200).json({ message: '获取评论数成功', totalCount, activeCount, negativeCount });
+});
+router.post('/notices/system', authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+        const { to, title, content, link } = req.body;
+        if (!title || !content) {
+            return res.status(400).json({ message: '标题和内容不能为空' });
+        }
+        const recipients = to === 'all'
+            ? await prisma.users.findMany({
+                where: { deleted_at: null, status: 1 },
+                select: { id: true }
+            })
+            : Array.isArray(to)
+                ? to.map((id) => ({ id: BigInt(id) }))
+                : to
+                    ? [{ id: BigInt(to) }]
+                    : [];
+        if (recipients.length === 0) {
+            return res.status(400).json({ message: '请选择通知接收人' });
+        }
+        await Promise.all(recipients.map(user => noticeService.createSystemNotice({
+            to: user.id,
+            title,
+            content,
+            link,
+        })));
+        return res.status(201).json({ message: '系统通知发送成功', count: recipients.length });
+    }
+    catch (error) {
+        return res.status(500).json({ message: '系统通知发送失败', error });
+    }
 });
 /**
  * 获取网站信息
@@ -355,6 +386,7 @@ router.get('/allUsers', authMiddleware, adminMiddleware, async (req, res) => {
                 status: true,
                 header_background: true,
                 avatar: true,
+                banned_until: true,
                 created_at: true,
                 updated_at: true
             }
@@ -367,7 +399,8 @@ router.get('/allUsers', authMiddleware, adminMiddleware, async (req, res) => {
             ...user,
             id: user.id.toString(),
             created_at: user.created_at.toISOString(),
-            updated_at: user.updated_at.toISOString()
+            updated_at: user.updated_at.toISOString(),
+            banned_until: user.banned_until?.toISOString() ?? null
         }));
         res.status(200).json({
             data: responseData,
@@ -395,11 +428,17 @@ router.delete('/user/:userId', authMiddleware, adminMiddleware, async (req, res)
         if (!user) {
             return res.status(404).json({ message: '用户不存在' });
         }
-        // 软删除用户
-        await prisma.users.update({
-            where: { id: userId },
-            data: { deleted_at: new Date() }
-        });
+        // 软删除用户，并吊销该用户全部登录会话
+        await prisma.$transaction([
+            prisma.users.update({
+                where: { id: userId },
+                data: { deleted_at: new Date() }
+            }),
+            prisma.user_sessions.updateMany({
+                where: { user_id: user.id, status: 'active' },
+                data: { status: 'revoked', last_active_at: new Date() }
+            })
+        ]);
         res.status(200).json({ message: '用户删除成功' });
     }
     catch (error) {
@@ -411,7 +450,7 @@ router.delete('/user/:userId', authMiddleware, adminMiddleware, async (req, res)
 router.patch('/user/:userId', authMiddleware, adminMiddleware, async (req, res) => {
     try {
         const userId = parseInt(req.params.userId);
-        const { username, email, nickname, brief, status, role, avatar, header_background } = req.body;
+        const { username, email, nickname, brief, status, role, avatar, header_background, banned_until } = req.body;
         if (isNaN(userId)) {
             return res.status(400).json({ message: '无效的用户ID' });
         }
@@ -432,31 +471,46 @@ router.patch('/user/:userId', authMiddleware, adminMiddleware, async (req, res) 
             updateData.nickname = nickname;
         if (brief !== undefined)
             updateData.brief = brief;
-        if (status !== undefined)
-            updateData.status = parseInt(status);
+        const nextStatus = status !== undefined ? parseInt(status) : undefined;
+        if (nextStatus !== undefined)
+            updateData.status = nextStatus;
+        if (banned_until !== undefined)
+            updateData.banned_until = banned_until ? new Date(banned_until) : null;
+        if (nextStatus === 1 && banned_until === undefined)
+            updateData.banned_until = null;
         if (role !== undefined)
             updateData.role = parseInt(role);
         if (avatar !== undefined)
             updateData.avatar = avatar;
         if (header_background !== undefined)
             updateData.header_background = header_background;
-        // 更新用户信息
-        const updatedUser = await prisma.users.update({
-            where: { id: userId },
-            data: updateData,
-            select: {
-                id: true,
-                username: true,
-                email: true,
-                nickname: true,
-                brief: true,
-                role: true,
-                status: true,
-                avatar: true,
-                header_background: true,
-                created_at: true,
-                updated_at: true
+        // 更新用户信息；封禁时立即吊销该用户全部登录会话
+        const updatedUser = await prisma.$transaction(async (tx) => {
+            const user = await tx.users.update({
+                where: { id: userId },
+                data: updateData,
+                select: {
+                    id: true,
+                    username: true,
+                    email: true,
+                    nickname: true,
+                    brief: true,
+                    role: true,
+                    status: true,
+                    avatar: true,
+                    header_background: true,
+                    banned_until: true,
+                    created_at: true,
+                    updated_at: true
+                }
+            });
+            if (nextStatus === 2) {
+                await tx.user_sessions.updateMany({
+                    where: { user_id: user.id, status: 'active' },
+                    data: { status: 'revoked', last_active_at: new Date() }
+                });
             }
+            return user;
         });
         res.status(200).json({
             message: '用户信息更新成功',
@@ -464,13 +518,144 @@ router.patch('/user/:userId', authMiddleware, adminMiddleware, async (req, res) 
                 ...updatedUser,
                 id: updatedUser.id.toString(),
                 created_at: updatedUser.created_at.toISOString(),
-                updated_at: updatedUser.updated_at.toISOString()
+                updated_at: updatedUser.updated_at.toISOString(),
+                banned_until: updatedUser.banned_until?.toISOString() ?? null
             }
         });
     }
     catch (error) {
         console.error('更新用户信息失败', error);
         res.status(500).json({ message: '更新用户信息失败', error });
+    }
+});
+function formatLink(link) {
+    return {
+        ...link,
+        id: link.id.toString(),
+        created_at: link.created_at.toISOString(),
+        deleted_at: link.deleted_at?.toISOString() ?? null,
+    };
+}
+// 获取全部友情链接
+router.get('/links', authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+        const { page: pageStr, pageSize: pageSizeStr, ...filters } = req.query;
+        const page = parseInt(pageStr) || 1;
+        const pageSize = parseInt(pageSizeStr) || 10;
+        const skip = (page - 1) * pageSize;
+        const where = { deleted_at: null };
+        if (filters.linkId)
+            where.id = BigInt(filters.linkId);
+        if (filters.sitename)
+            where.sitename = { contains: filters.sitename };
+        if (filters.url)
+            where.url = { contains: filters.url };
+        if (filters.brief)
+            where.brief = { contains: filters.brief };
+        if (filters.status !== undefined && filters.status !== '')
+            where.status = parseInt(filters.status);
+        const [links, total] = await Promise.all([
+            prisma.link.findMany({
+                where,
+                orderBy: { created_at: 'desc' },
+                skip,
+                take: pageSize,
+            }),
+            prisma.link.count({ where }),
+        ]);
+        res.status(200).json({
+            data: links.map(formatLink),
+            page,
+            pageSize,
+            total,
+        });
+    }
+    catch (error) {
+        console.error('查询友情链接失败', error);
+        res.status(500).json({ message: '查询友情链接失败', error });
+    }
+});
+// 新增友情链接
+router.post('/links', authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+        const { logo, sitename, brief, url, status } = req.body;
+        if (!sitename || !url) {
+            return res.status(400).json({ message: '站点名称和链接地址不能为空' });
+        }
+        const link = await prisma.link.create({
+            data: {
+                logo: logo || null,
+                sitename: String(sitename).trim(),
+                brief: brief || null,
+                url: String(url).trim(),
+                status: status === undefined ? 1 : parseInt(status),
+            },
+        });
+        res.status(200).json({ message: '友情链接新增成功', data: formatLink(link) });
+    }
+    catch (error) {
+        console.error('新增友情链接失败', error);
+        res.status(500).json({ message: '新增友情链接失败', error });
+    }
+});
+// 更新友情链接
+router.patch('/link/:linkId', authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+        const linkId = parseInt(req.params.linkId);
+        const { logo, sitename, brief, url, status } = req.body;
+        if (isNaN(linkId)) {
+            return res.status(400).json({ message: '无效的友情链接ID' });
+        }
+        const existingLink = await prisma.link.findFirst({
+            where: { id: linkId, deleted_at: null },
+        });
+        if (!existingLink) {
+            return res.status(404).json({ message: '友情链接不存在' });
+        }
+        const updateData = {};
+        if (logo !== undefined)
+            updateData.logo = logo || null;
+        if (sitename !== undefined)
+            updateData.sitename = String(sitename).trim();
+        if (brief !== undefined)
+            updateData.brief = brief || null;
+        if (url !== undefined)
+            updateData.url = String(url).trim();
+        if (status !== undefined)
+            updateData.status = parseInt(status);
+        const link = await prisma.link.update({
+            where: { id: linkId },
+            data: updateData,
+        });
+        res.status(200).json({ message: '友情链接更新成功', data: formatLink(link) });
+    }
+    catch (error) {
+        console.error('更新友情链接失败', error);
+        res.status(500).json({ message: '更新友情链接失败', error });
+    }
+});
+// 删除友情链接（软删除）
+router.delete('/link/:linkId', authMiddleware, adminMiddleware, async (req, res) => {
+    try {
+        const linkId = parseInt(req.params.linkId);
+        if (isNaN(linkId)) {
+            return res.status(400).json({ message: '无效的友情链接ID' });
+        }
+        const existingLink = await prisma.link.findFirst({
+            where: { id: linkId, deleted_at: null },
+        });
+        if (!existingLink) {
+            return res.status(404).json({ message: '友情链接不存在' });
+        }
+        await prisma.link.update({
+            where: { id: linkId },
+            data: { deleted_at: new Date() },
+        });
+        res.status(200).json({ message: '友情链接删除成功' });
+    }
+    catch (error) {
+        console.error('删除友情链接失败', error);
+        res.status(500).json({ message: '删除友情链接失败', error });
     }
 });
 export default router;

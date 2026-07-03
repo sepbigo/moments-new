@@ -1,8 +1,7 @@
 import { Router } from "express";
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "../lib/prisma.js";
 import { authMiddleware } from "../middleware/authMiddleware.js";
 const router = Router();
-const prisma = new PrismaClient();
 // 添加友情链接
 router.post('', authMiddleware, async (req, res) => {
     const { logo, sitename, brief, url } = req.body;

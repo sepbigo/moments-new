@@ -1,9 +1,9 @@
 import { Router } from "express";
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "../lib/prisma.js";
 import { authMiddleware } from "../middleware/authMiddleware.js";
 import { logAction, logger } from "../services/log.service.js";
+import { noticeService } from "../services/notice.service.js";
 const router = Router();
-const prisma = new PrismaClient();
 // 创建一条评论 需要登录
 router.post('/', authMiddleware, async (req, res) => {
     try {
@@ -13,11 +13,13 @@ router.post('/', authMiddleware, async (req, res) => {
         if (!articleId || !content) {
             return res.status(400).json({ error: '文章ID和评论内容不能为空' });
         }
+        let parentComment = null;
         // 子评论
         if (parentId) {
             // 父评论
-            const parentComment = await prisma.comments.findUnique({
-                where: { id: BigInt(parentId) }
+            parentComment = await prisma.comments.findUnique({
+                where: { id: BigInt(parentId) },
+                select: { id: true, user_id: true, article_id: true }
             });
             // 检查父评论是否存在
             if (!parentComment) {
@@ -80,6 +82,26 @@ router.post('/', authMiddleware, async (req, res) => {
                 id: newComment.user.id.toString()
             }
         };
+        const actorName = newComment.user.nickname ?? newComment.user.username;
+        if (parentComment) {
+            await noticeService.createReplyNotice({
+                fromUserId: BigInt(userId),
+                replyToUserId: parentComment.user_id,
+                articleId: article.id,
+                commentId: newComment.id,
+                actorName,
+                content,
+            });
+        }
+        if (!parentComment || parentComment.user_id !== article.user_id) {
+            await noticeService.createCommentNotice({
+                fromUserId: BigInt(userId),
+                articleAuthorId: article.user_id,
+                articleId: article.id,
+                actorName,
+                content,
+            });
+        }
         logger.add({
             userId: null,
             action: logAction.COMMENT_CREATE,
