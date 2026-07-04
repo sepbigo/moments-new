@@ -71,7 +71,7 @@ export const useFeedStore = defineStore('feed', () => {
             }
             // 用聚合返回的评论总数初始化评论分页状态，与初始评论列表保持一致
             const total = article.comment_total ?? 0
-            const loaded = article.comments?.length ?? 0
+            const loaded = countRootComments(article.comments as Comment[] | undefined)
             commentPagination.value[article.id] = {
                 page: 1,
                 pageSize: 3,
@@ -228,11 +228,41 @@ export const useFeedStore = defineStore('feed', () => {
         }
     }
 
+    const countRootComments = (comments: Comment[] = []) => comments.filter(comment => !comment.parent_id).length
+
+    const appendComment = (articleId: number, newComment: Comment, parentId?: string | null) => {
+        if (!commentsMap.value[articleId]) {
+            commentsMap.value[articleId] = []
+        }
+
+        if (!parentId) {
+            commentsMap.value[articleId].push({ ...newComment, replies: newComment.replies || [] })
+            return
+        }
+
+        for (const comment of commentsMap.value[articleId]) {
+            if (comment.id === parentId) {
+                comment.replies = comment.replies || []
+                comment.replies.push(newComment)
+                return
+            }
+
+            const reply = comment.replies?.find(item => item.id === parentId)
+            if (reply) {
+                comment.replies = comment.replies || []
+                comment.replies.push(newComment)
+                return
+            }
+        }
+
+        commentsMap.value[articleId].push(newComment)
+    }
+
     // 更新 hasMore 状态
     function updateHasMore(articleId: number, total: number) {
-        const currentLength = commentsMap.value[articleId]?.length || 0
+        const currentLength = countRootComments(commentsMap.value[articleId])
         commentPagination.value[articleId].hasMore = currentLength < total
-        commentPagination.value[articleId].remaining = total - currentLength
+        commentPagination.value[articleId].remaining = Math.max(total - currentLength, 0)
     }
     // 获取文章初始评论
     const fetchInitialComments = async (articleId: number) => {
@@ -305,10 +335,12 @@ export const useFeedStore = defineStore('feed', () => {
 
             if (res.data) {
                 const newComment = res.data; //返回的新文章内容)
-                if (!commentsMap.value[payload.articleId]) {
-                    commentsMap.value[payload.articleId] = []
+                appendComment(payload.articleId, newComment, payload.parentId)
+                const state = commentPagination.value[payload.articleId]
+                if (state && !payload.parentId) {
+                    state.total++
+                    updateHasMore(payload.articleId, state.total)
                 }
-                commentsMap.value[payload.articleId].push(newComment)
 
                 const article = articles.value.find(a => a.id === Number(payload.articleId))
                 if (article) {
