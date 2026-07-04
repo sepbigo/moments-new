@@ -11,8 +11,15 @@ export interface commentData {
 export interface createCommentData {
     articleId: number;
     content: string;
-    partentId?: number
+    parentId?: number | string | null;
 }
+export interface CommentUser {
+    id: string;
+    username: string;
+    nickname: string | null;
+    avatar: string | null;
+}
+
 export interface Comment {
     id: string;
     article_id: string;
@@ -22,10 +29,6 @@ export interface Comment {
     content: string;
     created_at: string;
     updated_at?: string;
-    user: {
-        id: string;
-        username: string;
-        nickname: string;
-        avatar: string
-    }
+    user: CommentUser;
+    replies?: Comment[];
 }

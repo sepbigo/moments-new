@@ -3,7 +3,7 @@ import { reactive, ref } from "vue";
 import { getArticleDetails, likeArticle, dislikeArticle, getArticleLikers as apiGetArticleLikers } from "@/api/articles";
 import type { articleData } from "@/types/article";
 import { createComment as apiCreateComment, getAllComment } from "@/api/comments";
-import type { commentData, createCommentData } from "@/types/comments";
+import type { Comment, createCommentData } from "@/types/comments";
 import { useMessageStore } from "./message"
 import { useUserStore } from "./user";
 import { getOrCreateGuestId } from "@/utils/guest";
@@ -14,7 +14,7 @@ const messageStore = useMessageStore()
 export const useArticleStore = defineStore('article', () => {
     // 数据
     const article = ref<articleData | null>(null)
-    const comments = ref<commentData[]>([])
+    const comments = ref<Comment[]>([])
     const likers = ref<any[]>([])
     const states = reactive({
         article: false,
@@ -63,6 +63,30 @@ export const useArticleStore = defineStore('article', () => {
             states.comment = false
         }
     }
+    const appendComment = (newComment: Comment, parentId?: number | string | null) => {
+        if (!parentId) {
+            comments.value.push({ ...newComment, replies: newComment.replies || [] })
+            return
+        }
+
+        for (const comment of comments.value as any[]) {
+            if (String(comment.id) === String(parentId)) {
+                comment.replies = comment.replies || []
+                comment.replies.push(newComment)
+                return
+            }
+
+            const reply = comment.replies?.find((item: any) => String(item.id) === String(parentId))
+            if (reply) {
+                comment.replies = comment.replies || []
+                comment.replies.push(newComment)
+                return
+            }
+        }
+
+        comments.value.push(newComment)
+    }
+
     // 评论文章
     const createComment = async (payload: createCommentData) => {
         const id = messageStore.show('正在发表评论', 'loading')
@@ -70,7 +94,7 @@ export const useArticleStore = defineStore('article', () => {
             const res = await apiCreateComment(payload)
             if (res.data) {
                 const newComment = res.data
-                comments.value.push(newComment)
+                appendComment(newComment, payload.parentId)
                 if (article.value) {
                     article.value.comment_count++
                 }

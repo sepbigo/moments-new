@@ -38,7 +38,20 @@ function serializeLiker(like: {
     };
 }
 
-// 将 comments 关系数据序列化为与 GET /comments/:articleId 一致的扁平结构
+type SerializedFeedComment = {
+    id: string;
+    content: string;
+    created_at: Date;
+    updated_at: Date;
+    article_id: string;
+    user_id: string;
+    parent_id: string | null;
+    parent_displayName: string | null;
+    user: { id: string; username: string; nickname: string | null; avatar: string | null };
+    replies: SerializedFeedComment[];
+};
+
+// 将 comments 关系数据序列化为两层评论结构
 function serializeFeedComment(comment: {
     id: bigint;
     content: string;
@@ -48,10 +61,21 @@ function serializeFeedComment(comment: {
     user_id: bigint;
     parent_id: bigint | null;
     user: { id: bigint; username: string; nickname: string | null; avatar: string | null };
-    parent: {
+    parent?: {
         user: { nickname: string | null; username: string };
     } | null;
-}) {
+    replies?: Array<{
+        id: bigint;
+        content: string;
+        created_at: Date;
+        updated_at: Date;
+        article_id: bigint;
+        user_id: bigint;
+        parent_id: bigint | null;
+        user: { id: bigint; username: string; nickname: string | null; avatar: string | null };
+        parent?: { user: { nickname: string | null; username: string } } | null;
+    }>;
+}): SerializedFeedComment {
     const parentDisplayName = comment.parent?.user.nickname ?? comment.parent?.user.username ?? null;
     return {
         id: comment.id.toString(),
@@ -65,7 +89,8 @@ function serializeFeedComment(comment: {
         user: {
             ...comment.user,
             id: comment.user.id.toString()
-        }
+        },
+        replies: comment.replies?.map(reply => serializeFeedComment(reply)) ?? []
     };
 }
 
@@ -125,7 +150,8 @@ const feedMetaInclude = {
     },
     comments: {
         where: {
-            deleted_at: null
+            deleted_at: null,
+            parent_id: null
         },
         orderBy: {
             created_at: 'asc'
@@ -140,7 +166,13 @@ const feedMetaInclude = {
                     avatar: true
                 }
             },
-            parent: {
+            replies: {
+                where: {
+                    deleted_at: null
+                },
+                orderBy: {
+                    created_at: 'asc'
+                },
                 include: {
                     user: {
                         select: {
@@ -148,6 +180,18 @@ const feedMetaInclude = {
                             username: true,
                             nickname: true,
                             avatar: true
+                        }
+                    },
+                    parent: {
+                        include: {
+                            user: {
+                                select: {
+                                    id: true,
+                                    username: true,
+                                    nickname: true,
+                                    avatar: true
+                                }
+                            }
                         }
                     }
                 }
@@ -158,7 +202,8 @@ const feedMetaInclude = {
         select: {
             comments: {
                 where: {
-                    deleted_at: null
+                    deleted_at: null,
+                    parent_id: null
                 }
             }
         }
@@ -452,6 +497,58 @@ router.get('/', optionalAuthMiddleware, async (req: Request, res: Response) => {
                 }))
             }
         }
+        const displayedRootComments = articleWithLikeStatus.flatMap(article => article.comments ?? []);
+        const displayedRootIds = displayedRootComments.map(comment => comment.id);
+        if (displayedRootIds.length > 0) {
+            const rootIdSet = new Set(displayedRootIds.map(id => id.toString()));
+            const allReplies = await prisma.comments.findMany({
+                where: {
+                    article_id: { in: articleWithLikeStatus.map(article => article.id) },
+                    parent_id: { not: null },
+                    deleted_at: null
+                },
+                orderBy: { created_at: 'asc' },
+                include: {
+                    user: {
+                        select: { id: true, username: true, nickname: true, avatar: true }
+                    },
+                    parent: {
+                        include: {
+                            user: {
+                                select: { id: true, username: true, nickname: true, avatar: true }
+                            }
+                        }
+                    }
+                }
+            });
+            const replyMap = new Map(allReplies.map(reply => [reply.id.toString(), reply]));
+            const repliesByRootId = new Map<string, typeof allReplies>();
+
+            const findRootId = (reply: typeof allReplies[number]) => {
+                let parentId = reply.parent_id?.toString() ?? null;
+                const visited = new Set<string>();
+                while (parentId) {
+                    if (rootIdSet.has(parentId)) return parentId;
+                    if (visited.has(parentId)) return null;
+                    visited.add(parentId);
+                    parentId = replyMap.get(parentId)?.parent_id?.toString() ?? null;
+                }
+                return null;
+            };
+
+            for (const reply of allReplies) {
+                const rootId = findRootId(reply);
+                if (!rootId) continue;
+                const replies = repliesByRootId.get(rootId) || [];
+                replies.push(reply);
+                repliesByRootId.set(rootId, replies);
+            }
+
+            for (const comment of displayedRootComments) {
+                comment.replies = repliesByRootId.get(comment.id.toString()) || [];
+            }
+        }
+
         // 总文章数
         const totalArticles = await prisma.articles.count({
             where: where
