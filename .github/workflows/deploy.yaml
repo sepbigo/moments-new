@@ -3,7 +3,7 @@ name: Build & Deploy Moments
 on:
   push:
     branches:
-      - main
+      # - main
       - develop
 
 jobs:
