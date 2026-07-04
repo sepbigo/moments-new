@@ -1,9 +1,9 @@
 import { Router } from "express";
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "../lib/prisma.js";
 import { authMiddleware } from "../middleware/authMiddleware.js";
 import { logAction, logger } from "../services/log.service.js";
+import { noticeService } from "../services/notice.service.js";
 const router = Router();
-const prisma = new PrismaClient();
 // 创建一条评论 需要登录
 router.post('/', authMiddleware, async (req, res) => {
     try {
@@ -13,11 +13,18 @@ router.post('/', authMiddleware, async (req, res) => {
         if (!articleId || !content) {
             return res.status(400).json({ error: '文章ID和评论内容不能为空' });
         }
+        let parentComment = null;
         // 子评论
         if (parentId) {
             // 父评论
-            const parentComment = await prisma.comments.findUnique({
-                where: { id: BigInt(parentId) }
+            parentComment = await prisma.comments.findUnique({
+                where: { id: BigInt(parentId) },
+                select: {
+                    id: true,
+                    user_id: true,
+                    article_id: true,
+                    user: { select: { nickname: true, username: true } }
+                }
             });
             // 检查父评论是否存在
             if (!parentComment) {
@@ -75,11 +82,33 @@ router.post('/', authMiddleware, async (req, res) => {
             article_id: newComment.article_id.toString(),
             user_id: newComment.user_id.toString(),
             parent_id: newComment.parent_id?.toString() ?? null,
+            parent_displayName: parentComment?.user.nickname ?? parentComment?.user.username ?? null,
+            replies: [],
             user: {
                 ...newComment.user,
                 id: newComment.user.id.toString()
             }
         };
+        const actorName = newComment.user.nickname ?? newComment.user.username;
+        if (parentComment) {
+            await noticeService.createReplyNotice({
+                fromUserId: BigInt(userId),
+                replyToUserId: parentComment.user_id,
+                articleId: article.id,
+                commentId: newComment.id,
+                actorName,
+                content,
+            });
+        }
+        if (!parentComment || parentComment.user_id !== article.user_id) {
+            await noticeService.createCommentNotice({
+                fromUserId: BigInt(userId),
+                articleAuthorId: article.user_id,
+                articleId: article.id,
+                actorName,
+                content,
+            });
+        }
         logger.add({
             userId: null,
             action: logAction.COMMENT_CREATE,
@@ -170,21 +199,36 @@ router.delete('/:commentId', authMiddleware, async (req, res) => {
         res.status(500).json({ error: '服务器内部错误' });
     }
 });
-// 获取文章评论
+// 获取文章评论：按父评论分页，回复固定收拢到对应父评论下（最多展示两层）
 router.get('/:articleId', async (req, res) => {
     try {
         const { articleId } = req.params;
         const page = parseInt(req.query.page) || 1;
         const pageSize = parseInt(req.query.pageSize) || 5;
         const skip = (page - 1) * pageSize;
-        const allComments = await prisma.comments.findMany({
+        const rootComments = await prisma.comments.findMany({
             where: {
                 article_id: BigInt(articleId),
+                parent_id: null,
                 deleted_at: null
             },
-            orderBy: { created_at: 'asc' }, //顺序排列
+            orderBy: { created_at: 'asc' },
             skip,
             take: pageSize,
+            include: {
+                user: {
+                    select: { id: true, username: true, nickname: true, avatar: true }
+                }
+            }
+        });
+        const rootIds = rootComments.map(comment => comment.id);
+        const allReplies = rootIds.length > 0 ? await prisma.comments.findMany({
+            where: {
+                article_id: BigInt(articleId),
+                parent_id: { not: null },
+                deleted_at: null
+            },
+            orderBy: { created_at: 'asc' },
             include: {
                 user: {
                     select: { id: true, username: true, nickname: true, avatar: true }
@@ -197,13 +241,38 @@ router.get('/:articleId', async (req, res) => {
                     }
                 }
             }
+        }) : [];
+        const rootIdSet = new Set(rootIds.map(id => id.toString()));
+        const commentMap = new Map(allReplies.map(comment => [comment.id.toString(), comment]));
+        const repliesByRootId = new Map();
+        const findRootId = (comment) => {
+            let parentId = comment.parent_id?.toString() ?? null;
+            const visited = new Set();
+            while (parentId) {
+                if (rootIdSet.has(parentId))
+                    return parentId;
+                if (visited.has(parentId))
+                    return null;
+                visited.add(parentId);
+                parentId = commentMap.get(parentId)?.parent_id?.toString() ?? null;
+            }
+            return null;
+        };
+        for (const reply of allReplies) {
+            const rootId = findRootId(reply);
+            if (!rootId)
+                continue;
+            const list = repliesByRootId.get(rootId) || [];
+            list.push(reply);
+            repliesByRootId.set(rootId, list);
+        }
+        const totalRootComments = await prisma.comments.count({
+            where: { article_id: BigInt(articleId), parent_id: null, deleted_at: null }
         });
-        const totalComments = await prisma.comments.count({
-            where: { article_id: BigInt(articleId), deleted_at: null }
-        });
-        // 构建响应数据
-        const responseData = allComments.map(comment => {
-            const parentDisplayName = comment.parent?.user.nickname ?? comment.parent?.user.username ?? null;
+        const serializeComment = (comment) => {
+            const parentDisplayName = 'parent' in comment
+                ? comment.parent?.user.nickname ?? comment.parent?.user.username ?? null
+                : null;
             return {
                 id: comment.id.toString(),
                 content: comment.content,
@@ -211,19 +280,23 @@ router.get('/:articleId', async (req, res) => {
                 updated_at: comment.updated_at,
                 article_id: comment.article_id.toString(),
                 user_id: comment.user_id.toString(),
-                parent_id: comment.parent_id?.toString(),
+                parent_id: comment.parent_id?.toString() ?? null,
                 parent_displayName: parentDisplayName,
                 user: {
                     ...comment.user,
                     id: comment.user.id.toString()
                 }
             };
-        });
+        };
+        const responseData = rootComments.map(comment => ({
+            ...serializeComment(comment),
+            replies: (repliesByRootId.get(comment.id.toString()) || []).map(serializeComment)
+        }));
         res.status(200).json({
             data: responseData,
             page,
             pageSize,
-            total: totalComments
+            total: totalRootComments
         });
     }
     catch (error) {

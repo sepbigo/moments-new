@@ -44,10 +44,22 @@ const frontRoutes: RouteRecordRaw[] = [
                 meta: { title: '个人资料', login: true }
             },
             {
+                path: '/notifications',
+                name: 'notifications',
+                component: () => import('@/views/Notifications.vue'),
+                meta: { title: '消息通知', login: true }
+            },
+            {
                 path: '/post',
                 name: 'post',
                 component: () => import('@/views/Post.vue'),
                 meta: { title: '发表文章', login: true }
+            },
+            {
+                path: '/article/:articleId/edit',
+                name: 'articleEdit',
+                component: () => import('@/views/Post.vue'),
+                meta: { title: '编辑文章', login: true }
             },
         ]
     }

@@ -1,9 +1,16 @@
 import { Router } from "express";
-import { location } from '../services/location.service.js';
+import { getLocation, getPreferredClientIp } from '../services/location.service.js';
 const router = Router();
 router.get('/', async (req, res) => {
     try {
-        const data = await location();
+        res.set('Cache-Control', 'no-store');
+        const clientIp = getPreferredClientIp([
+            req.headers['x-forwarded-for'],
+            req.headers['x-real-ip'],
+            req.headers['cf-connecting-ip'],
+            req.ip,
+        ]);
+        const data = await getLocation(clientIp);
         res.status(200).json({ data });
     }
     catch (error) {

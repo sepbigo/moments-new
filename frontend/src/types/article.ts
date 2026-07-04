@@ -1,3 +1,5 @@
+import type { Comment } from './comments'
+
 export interface articleImageItem {
     id?: string,
     article_id?: string,
@@ -33,6 +35,7 @@ export interface articleData {
     like_count: number,
     comment_count: number,
     location?: string,
+    status?: number,
     created_at: string,
     user: {
         id: string,
@@ -42,7 +45,18 @@ export interface articleData {
     },
     article_images: articleImageItem[],
     article_videos: articleVideoItem[],
-    tags: articleTagItem[]
+    tags: articleTagItem[],
+    // 列表接口聚合返回的点赞人预览、初始评论与评论总数（详情接口不返回）
+    likers?: Liker[],
+    comments?: Comment[],
+    comment_total?: number
+}
+
+export interface Liker {
+    id: string,
+    displayName: string,
+    username: string,
+    avatar: string
 }
 export interface createArticleData {
     content: string,
@@ -66,8 +80,11 @@ export interface updateArticleData {
     type?: number,
     isAd?: boolean,
     isTop?: boolean,
+    adTitle?: string,
+    adUrl?: string,
     imageUrls?: string[],
     videoUrls?: string[],
+    thumbnail_url?: string,
     tags?: string[]
 }
 

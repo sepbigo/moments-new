@@ -4,6 +4,7 @@ import { prisma } from '../lib/prisma.js';
 import { authMiddleware } from '../middleware/authMiddleware.js';
 import { optionalAuthMiddleware } from '../middleware/optionalAuthMiddleware.js';
 import { logAction, logger } from "../services/log.service.js"
+import { noticeService } from '../services/notice.service.js'
 
 const router = Router();
 
@@ -17,6 +18,93 @@ type ArticleWithRelations = Prisma.articlesGetPayload<{
 }> & {
     isLiked?: boolean
 };
+
+type ArticleWithFeedMeta = Prisma.articlesGetPayload<{
+    include: typeof listArticleInclude
+}> & {
+    isLiked?: boolean
+};
+
+// 将 article_likes 关系数据序列化为前端点赞人列表所需的结构
+function serializeLiker(like: {
+    user_id: bigint;
+    user: { id: bigint; username: string; nickname: string | null; avatar: string | null };
+}) {
+    return {
+        id: like.user_id.toString(),
+        displayName: like.user.nickname || like.user.username,
+        username: like.user.username,
+        avatar: like.user.avatar
+    };
+}
+
+type SerializedFeedComment = {
+    id: string;
+    content: string;
+    created_at: Date;
+    updated_at: Date;
+    article_id: string;
+    user_id: string;
+    parent_id: string | null;
+    parent_displayName: string | null;
+    user: { id: string; username: string; nickname: string | null; avatar: string | null };
+    replies: SerializedFeedComment[];
+};
+
+// 将 comments 关系数据序列化为两层评论结构
+function serializeFeedComment(comment: {
+    id: bigint;
+    content: string;
+    created_at: Date;
+    updated_at: Date;
+    article_id: bigint;
+    user_id: bigint;
+    parent_id: bigint | null;
+    user: { id: bigint; username: string; nickname: string | null; avatar: string | null };
+    parent?: {
+        user: { nickname: string | null; username: string };
+    } | null;
+    replies?: Array<{
+        id: bigint;
+        content: string;
+        created_at: Date;
+        updated_at: Date;
+        article_id: bigint;
+        user_id: bigint;
+        parent_id: bigint | null;
+        user: { id: bigint; username: string; nickname: string | null; avatar: string | null };
+        parent?: { user: { nickname: string | null; username: string } } | null;
+    }>;
+}): SerializedFeedComment {
+    const parentDisplayName = comment.parent?.user.nickname ?? comment.parent?.user.username ?? null;
+    return {
+        id: comment.id.toString(),
+        content: comment.content,
+        created_at: comment.created_at,
+        updated_at: comment.updated_at,
+        article_id: comment.article_id.toString(),
+        user_id: comment.user_id.toString(),
+        parent_id: comment.parent_id?.toString() ?? null,
+        parent_displayName: parentDisplayName,
+        user: {
+            ...comment.user,
+            id: comment.user.id.toString()
+        },
+        replies: comment.replies?.map(reply => serializeFeedComment(reply)) ?? []
+    };
+}
+
+// 序列化列表场景下的文章：在基础字段之上附加 likers / comments / comment_total
+function serializeFeedArticle(article: ArticleWithFeedMeta) {
+    const { article_likes, comments, _count, ...rest } = article;
+    const base = serializeArticle({ ...rest, isLiked: article.isLiked });
+    return {
+        ...base,
+        likers: (article_likes ?? []).map(serializeLiker),
+        comments: (comments ?? []).map(serializeFeedComment),
+        comment_total: _count?.comments ?? 0
+    };
+}
 
 const articleInclude = {
     user: {
@@ -38,6 +126,93 @@ const articleInclude = {
             tag_id: 'asc'
         }
     }
+} satisfies Prisma.articlesInclude;
+
+// 列表场景额外带出的聚合数据：每篇文章的点赞人预览 + 前 N 条评论 + 评论总数
+// 目的是让首页信息流一次请求即可渲染，避免前端对每篇文章再发起点赞/评论请求（N+1 瀑布）
+const FEED_COMMENT_PAGE_SIZE = 3;
+
+const feedMetaInclude = {
+    article_likes: {
+        include: {
+            user: {
+                select: {
+                    id: true,
+                    username: true,
+                    nickname: true,
+                    avatar: true
+                }
+            }
+        },
+        orderBy: {
+            created_at: 'desc'
+        }
+    },
+    comments: {
+        where: {
+            deleted_at: null,
+            parent_id: null
+        },
+        orderBy: {
+            created_at: 'asc'
+        },
+        take: FEED_COMMENT_PAGE_SIZE,
+        include: {
+            user: {
+                select: {
+                    id: true,
+                    username: true,
+                    nickname: true,
+                    avatar: true
+                }
+            },
+            replies: {
+                where: {
+                    deleted_at: null
+                },
+                orderBy: {
+                    created_at: 'asc'
+                },
+                include: {
+                    user: {
+                        select: {
+                            id: true,
+                            username: true,
+                            nickname: true,
+                            avatar: true
+                        }
+                    },
+                    parent: {
+                        include: {
+                            user: {
+                                select: {
+                                    id: true,
+                                    username: true,
+                                    nickname: true,
+                                    avatar: true
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    _count: {
+        select: {
+            comments: {
+                where: {
+                    deleted_at: null,
+                    parent_id: null
+                }
+            }
+        }
+    }
+} satisfies Prisma.articlesInclude;
+
+const listArticleInclude = {
+    ...articleInclude,
+    ...feedMetaInclude
 } satisfies Prisma.articlesInclude;
 
 function normalizeTagNames(input: ArticleTagInput) {
@@ -158,6 +333,7 @@ router.post('/', authMiddleware, async (req: Request, res: Response) => {
         if (!content && !imageUrls && !videoUrls) {
             return res.status(400).json({ error: '文章内容不能为空' });
         }
+        const isAdmin = req.user?.role === 1
         const tagNames = normalizeTagNames(tags);
         //创建一篇文章 ⭐⭐⭐⭐
         const newArticle = await prisma.$transaction(async (tx) => {
@@ -168,10 +344,10 @@ router.post('/', authMiddleware, async (req: Request, res: Response) => {
                     status,
                     location,
                     type,
-                    is_top: isTop,
-                    is_ad: isAd,
-                    ad_title: adTitle,
-                    ad_url: adUrl,
+                    is_top: isAdmin ? !!isTop : false,
+                    is_ad: isAdmin ? !!isAd : false,
+                    ad_title: isAdmin ? adTitle : null,
+                    ad_url: isAdmin ? adUrl : null,
                     user: {
                         connect: { id: BigInt(userId!), }
                     }
@@ -281,8 +457,8 @@ router.get('/', optionalAuthMiddleware, async (req: Request, res: Response) => {
                 { created_at: 'desc' }, //按时间发布降序排列
                 { id: 'desc' }
             ],
-            //同时查询作者部分信息、文章的相关图片/视频/标签
-            include: articleInclude
+            //列表场景一次性带出作者、图片/视频/标签、点赞人预览、前 N 条评论与评论总数
+            include: listArticleInclude
         })
 
         // 动态计算用户对文章的喜欢状态
@@ -321,12 +497,64 @@ router.get('/', optionalAuthMiddleware, async (req: Request, res: Response) => {
                 }))
             }
         }
+        const displayedRootComments = articleWithLikeStatus.flatMap(article => article.comments ?? []);
+        const displayedRootIds = displayedRootComments.map(comment => comment.id);
+        if (displayedRootIds.length > 0) {
+            const rootIdSet = new Set(displayedRootIds.map(id => id.toString()));
+            const allReplies = await prisma.comments.findMany({
+                where: {
+                    article_id: { in: articleWithLikeStatus.map(article => article.id) },
+                    parent_id: { not: null },
+                    deleted_at: null
+                },
+                orderBy: { created_at: 'asc' },
+                include: {
+                    user: {
+                        select: { id: true, username: true, nickname: true, avatar: true }
+                    },
+                    parent: {
+                        include: {
+                            user: {
+                                select: { id: true, username: true, nickname: true, avatar: true }
+                            }
+                        }
+                    }
+                }
+            });
+            const replyMap = new Map(allReplies.map(reply => [reply.id.toString(), reply]));
+            const repliesByRootId = new Map<string, typeof allReplies>();
+
+            const findRootId = (reply: typeof allReplies[number]) => {
+                let parentId = reply.parent_id?.toString() ?? null;
+                const visited = new Set<string>();
+                while (parentId) {
+                    if (rootIdSet.has(parentId)) return parentId;
+                    if (visited.has(parentId)) return null;
+                    visited.add(parentId);
+                    parentId = replyMap.get(parentId)?.parent_id?.toString() ?? null;
+                }
+                return null;
+            };
+
+            for (const reply of allReplies) {
+                const rootId = findRootId(reply);
+                if (!rootId) continue;
+                const replies = repliesByRootId.get(rootId) || [];
+                replies.push(reply);
+                repliesByRootId.set(rootId, replies);
+            }
+
+            for (const comment of displayedRootComments) {
+                comment.replies = repliesByRootId.get(comment.id.toString()) || [];
+            }
+        }
+
         // 总文章数
         const totalArticles = await prisma.articles.count({
             where: where
         });
-        // 处理数据，转化BigInt
-        const responseArticles = articleWithLikeStatus.map(serializeArticle);
+        // 处理数据，转化BigInt，并附加点赞人/评论聚合数据
+        const responseArticles = articleWithLikeStatus.map(serializeFeedArticle);
 
         res.status(200).json({
             data: responseArticles,
@@ -403,7 +631,7 @@ router.patch('/:articleId', authMiddleware, async (req: Request, res: Response) 
         }
         const userId = req.user?.userId
         const { articleId } = req.params
-        const { content, status, location, type, isAd, isTop, imageUrls, videoUrls, tags } = req.body
+        const { content, status, location, type, isAd, isTop, adTitle, adUrl, imageUrls, videoUrls, thumbnail_url, tags } = req.body
         // 验证文章是否存在
         const article = await prisma.articles.findUnique({
             where: {
@@ -427,15 +655,48 @@ router.patch('/:articleId', authMiddleware, async (req: Request, res: Response) 
             })
             return res.status(403).json({ status: false, error: '无权修改此文章' })
         }
+        const isAdmin = req.user.role === 1
+        const isEditExpired = Date.now() - article.created_at.getTime() > 24 * 60 * 60 * 1000
+        if (!isAdmin && isEditExpired) {
+            logger.add({
+                userId: BigInt(userId!),
+                action: logAction.ARTICLE_UPDATE,
+                targetType: 'articles',
+                targetId: BigInt(articleId),
+                status: 'FAILED',
+                details: { error: '文章发布超过1天后不能编辑' },
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent'] || '',
+            })
+            return res.status(403).json({ status: false, error: '文章发布超过1天后不能编辑' })
+        }
         // 构建更新数据
         const updateData: Prisma.articlesUpdateInput = {}
-        // 数据不为空进行更新
-        if (content) updateData.content = content
-        if (status != undefined) updateData.status = status
-        if (location) updateData.location = location
+        // 字段显式传入时更新，允许清空内容/位置
+        if (content !== undefined) updateData.content = content
+        if (location !== undefined) updateData.location = location
         if (type !== undefined) updateData.type = type
-        if (isAd !== undefined) updateData.is_ad = isAd
-        if (isTop !== undefined) updateData.is_top = isTop
+        // 管理字段仅管理员可修改，避免普通作者自行置顶/广告/下架
+        if (adTitle !== undefined) {
+            if (!isAdmin) return res.status(403).json({ status: false, error: '无权修改广告信息' })
+            updateData.ad_title = adTitle
+        }
+        if (adUrl !== undefined) {
+            if (!isAdmin) return res.status(403).json({ status: false, error: '无权修改广告信息' })
+            updateData.ad_url = adUrl
+        }
+        if (status !== undefined) {
+            if (!isAdmin) return res.status(403).json({ status: false, error: '无权修改文章状态' })
+            updateData.status = status
+        }
+        if (isAd !== undefined) {
+            if (!isAdmin) return res.status(403).json({ status: false, error: '无权设置广告' })
+            updateData.is_ad = isAd
+        }
+        if (isTop !== undefined) {
+            if (!isAdmin) return res.status(403).json({ status: false, error: '无权设置置顶' })
+            updateData.is_top = isTop
+        }
         const updateArticle = await prisma.$transaction(async (tx) => {
             await tx.articles.update({
                 where: {
@@ -447,6 +708,12 @@ router.patch('/:articleId', authMiddleware, async (req: Request, res: Response) 
                 await replaceArticleTags(tx, BigInt(articleId), normalizeTagNames(tags), BigInt(userId))
             }
             await replaceArticleMedia(tx, BigInt(articleId), imageUrls, videoUrls)
+            if (thumbnail_url !== undefined && videoUrls !== undefined) {
+                await tx.article_videos.updateMany({
+                    where: { article_id: BigInt(articleId) },
+                    data: { thumbnail_url }
+                })
+            }
             return tx.articles.findUniqueOrThrow({
                 where: { id: BigInt(articleId) },
                 include: articleInclude
@@ -666,6 +933,12 @@ router.post('/:articleId/like', optionalAuthMiddleware, async (req: Request, res
                     }
                 })
             ])
+            await noticeService.createLikeNotice({
+                fromUserId: BigInt(userId),
+                articleAuthorId: article.user_id,
+                articleId: BigInt(articleId),
+                actorName: req.user.username,
+            })
             logger.add({
                 userId: null,
                 action: logAction.LIKE_CREATE,

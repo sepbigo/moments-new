@@ -1,15 +1,19 @@
 <script setup lang="ts" name="Header">
-import { computed, ref, onMounted, onUnmounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useUserStore } from '@/store/user'
 import { UserCircleRegular, Hive, Camera } from '@vicons/fa'
 import { Icon } from '@vicons/utils'
 import { useAuthStore } from '@/store/auth'
 import router from '@/router'
 import { useDefaultStore } from '@/store/default'
+import { useNoticeStore } from '@/store/notice'
+import NoticePopover from '@/components/notice/NoticePopover.vue'
 
 const authStore = useAuthStore()
 const userStore = useUserStore()
 const defaultStore = useDefaultStore()
+const noticeStore = useNoticeStore()
+let noticeTimer: number | undefined
 const props = defineProps({
   headerBackgroundUrl: String
 })
@@ -34,6 +38,35 @@ const isVideo = computed(() => {
   return backgroundExtension.value ? videoExtension.includes(backgroundExtension.value) : false
 })
 
+const backgroundVideoRef = ref<HTMLVideoElement | null>(null)
+const tryPlayBackgroundVideo = async () => {
+  await nextTick()
+  const video = backgroundVideoRef.value
+  if (!video) return
+
+  video.muted = true
+  video.defaultMuted = true
+  video.playsInline = true
+  video.setAttribute('muted', '')
+  video.setAttribute('playsinline', '')
+  video.setAttribute('webkit-playsinline', '')
+  video.setAttribute('x5-playsinline', '')
+  video.setAttribute('x5-video-player-type', 'h5')
+  video.setAttribute('x5-video-player-fullscreen', 'false')
+
+  try {
+    await video.play()
+  } catch {
+    // 微信内置浏览器可能仍会按系统策略阻止自动播放，保留首帧/海报展示。
+  }
+}
+
+watch(backgroundPath, () => {
+  if (isVideo.value) {
+    void tryPlayBackgroundVideo()
+  }
+}, { flush: 'post' })
+
 // 顶栏
 // 模糊
 const isBlurred = ref(false)
@@ -57,26 +90,53 @@ onMounted(() => {
     )
     observer.observe(headerEl)
   }
+
+  void tryPlayBackgroundVideo()
+  if (isLogin.value) {
+    void noticeStore.fetchUnreadCount()
+    noticeTimer = window.setInterval(() => {
+      if (isLogin.value) void noticeStore.fetchUnreadCount()
+    }, 60000)
+  }
 })
 onUnmounted(() => {
   observer && observer.disconnect()
+  if (noticeTimer) window.clearInterval(noticeTimer)
 
 })
 
 // 根据token判断用户是否登录
-const isLogin = computed(() => !!userStore.token)
+const isLogin = computed(() => !!userStore.accessToken)
+watch(isLogin, (value) => {
+  if (value) {
+    void noticeStore.fetchUnreadCount()
+    if (!noticeTimer) {
+      noticeTimer = window.setInterval(() => {
+        if (isLogin.value) void noticeStore.fetchUnreadCount()
+      }, 60000)
+    }
+  } else {
+    noticeStore.unreadCount = 0
+    if (noticeTimer) {
+      window.clearInterval(noticeTimer)
+      noticeTimer = undefined
+    }
+  }
+})
 </script>
 
 <template>
-  
+
   <div class="header">
     <div class="background">
       <!-- 如果设置为图片 -->
       <img v-if="isImage" :src="backgroundPath" alt="顶部图片" />
       <!-- 如果设置为视频 -->
-      <video v-else-if="isVideo" :src="backgroundPath" autoplay muted loop playsinline />
+      <video v-else-if="isVideo" ref="backgroundVideoRef" :src="backgroundPath" autoplay muted loop playsinline
+        webkit-playsinline x5-playsinline x5-video-player-type="h5" x5-video-player-fullscreen="false" preload="auto" />
       <!-- 其他 -->
-      <video v-else :src="defaultBackground" autoplay muted loop playsinline />
+      <video v-else ref="backgroundVideoRef" :src="defaultBackground" autoplay muted loop playsinline webkit-playsinline
+        x5-playsinline x5-video-player-type="h5" x5-video-player-fullscreen="false" preload="auto" />
     </div>
     <!-- 顶部导航栏 -->
     <div class="top-bar-wrapper">
@@ -84,8 +144,8 @@ const isLogin = computed(() => !!userStore.token)
 
         <div class="top-bar-left">
           <slot name="left" :isBlurred="isBlurred">
-            <Icon :class="['icon', { blurred: isBlurred }]" title="登录/注册">
-              <UserCircleRegular @click="authStore.showAuth" v-if="!isLogin" />
+            <Icon :class="['icon', { blurred: isBlurred }]" title="登录/注册" v-if="!isLogin">
+              <UserCircleRegular @click="authStore.showAuth" />
             </Icon>
           </slot>
         </div>
@@ -97,6 +157,7 @@ const isLogin = computed(() => !!userStore.token)
                 <Camera />
               </Icon>
             </div>
+            <NoticePopover v-if="isLogin" :is-blurred="isBlurred" />
             <div class="link" @click="router.push({ name: 'links' })">
               <Icon :class="['icon', { blurred: isBlurred }]" title="友情链接">
                 <Hive />

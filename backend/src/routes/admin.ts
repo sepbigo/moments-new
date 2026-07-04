@@ -4,6 +4,7 @@ import { prisma } from '../lib/prisma.js';
 import { adminMiddleware } from "../middleware/adminMiddleware.js";
 import { authMiddleware } from "../middleware/authMiddleware.js";
 import { buildConfigWhere, formatConfigResponse, parseConfigQuery, type ConfigAccessLevel } from "../services/config-query.service.js";
+import { noticeService } from "../services/notice.service.js";
 
 const router = Router()
 
@@ -74,6 +75,41 @@ router.get('/comment', authMiddleware, adminMiddleware, async (req: Request, res
         res.status(500).json({ message: '获取评论数失败', error })
     }
     res.status(200).json({ message: '获取评论数成功', totalCount, activeCount, negativeCount })
+})
+
+router.post('/notices/system', authMiddleware, adminMiddleware, async (req: Request, res: Response) => {
+    try {
+        const { to, title, content, link } = req.body
+        if (!title || !content) {
+            return res.status(400).json({ message: '标题和内容不能为空' })
+        }
+
+        const recipients = to === 'all'
+            ? await prisma.users.findMany({
+                where: { deleted_at: null, status: 1 },
+                select: { id: true }
+            })
+            : Array.isArray(to)
+                ? to.map((id: string | number | bigint) => ({ id: BigInt(id) }))
+                : to
+                    ? [{ id: BigInt(to) }]
+                    : []
+
+        if (recipients.length === 0) {
+            return res.status(400).json({ message: '请选择通知接收人' })
+        }
+
+        await Promise.all(recipients.map(user => noticeService.createSystemNotice({
+            to: user.id,
+            title,
+            content,
+            link,
+        })))
+
+        return res.status(201).json({ message: '系统通知发送成功', count: recipients.length })
+    } catch (error) {
+        return res.status(500).json({ message: '系统通知发送失败', error })
+    }
 })
 
 /**
@@ -373,6 +409,7 @@ router.get('/allUsers', authMiddleware, adminMiddleware, async (req: Request, re
                 status: true,
                 header_background: true,
                 avatar: true,
+                banned_until: true,
                 created_at: true,
                 updated_at: true
             }
@@ -386,7 +423,8 @@ router.get('/allUsers', authMiddleware, adminMiddleware, async (req: Request, re
             ...user,
             id: user.id.toString(),
             created_at: user.created_at.toISOString(),
-            updated_at: user.updated_at.toISOString()
+            updated_at: user.updated_at.toISOString(),
+            banned_until: user.banned_until?.toISOString() ?? null
         }))
         
         res.status(200).json({
@@ -419,11 +457,17 @@ router.delete('/user/:userId', authMiddleware, adminMiddleware, async (req: Requ
             return res.status(404).json({ message: '用户不存在' })
         }
         
-        // 软删除用户
-        await prisma.users.update({
-            where: { id: userId },
-            data: { deleted_at: new Date() }
-        })
+        // 软删除用户，并吊销该用户全部登录会话
+        await prisma.$transaction([
+            prisma.users.update({
+                where: { id: userId },
+                data: { deleted_at: new Date() }
+            }),
+            prisma.user_sessions.updateMany({
+                where: { user_id: user.id, status: 'active' },
+                data: { status: 'revoked', last_active_at: new Date() }
+            })
+        ])
         
         res.status(200).json({ message: '用户删除成功' })
     } catch (error) {
@@ -436,7 +480,7 @@ router.delete('/user/:userId', authMiddleware, adminMiddleware, async (req: Requ
 router.patch('/user/:userId', authMiddleware, adminMiddleware, async (req: Request, res: Response) => {
     try {
         const userId = parseInt(req.params.userId)
-        const { username, email, nickname, brief, status, role, avatar, header_background } = req.body
+        const { username, email, nickname, brief, status, role, avatar, header_background, banned_until } = req.body
         
         if (isNaN(userId)) {
             return res.status(400).json({ message: '无效的用户ID' })
@@ -457,28 +501,43 @@ router.patch('/user/:userId', authMiddleware, adminMiddleware, async (req: Reque
         if (email !== undefined) updateData.email = email
         if (nickname !== undefined) updateData.nickname = nickname
         if (brief !== undefined) updateData.brief = brief
-        if (status !== undefined) updateData.status = parseInt(status)
+        const nextStatus = status !== undefined ? parseInt(status) : undefined
+        if (nextStatus !== undefined) updateData.status = nextStatus
+        if (banned_until !== undefined) updateData.banned_until = banned_until ? new Date(banned_until) : null
+        if (nextStatus === 1 && banned_until === undefined) updateData.banned_until = null
         if (role !== undefined) updateData.role = parseInt(role)
         if (avatar !== undefined) updateData.avatar = avatar
         if (header_background !== undefined) updateData.header_background = header_background
         
-        // 更新用户信息
-        const updatedUser = await prisma.users.update({
-            where: { id: userId },
-            data: updateData,
-            select: {
-                id: true,
-                username: true,
-                email: true,
-                nickname: true,
-                brief: true,
-                role: true,
-                status: true,
-                avatar: true,
-                header_background: true,
-                created_at: true,
-                updated_at: true
+        // 更新用户信息；封禁时立即吊销该用户全部登录会话
+        const updatedUser = await prisma.$transaction(async (tx) => {
+            const user = await tx.users.update({
+                where: { id: userId },
+                data: updateData,
+                select: {
+                    id: true,
+                    username: true,
+                    email: true,
+                    nickname: true,
+                    brief: true,
+                    role: true,
+                    status: true,
+                    avatar: true,
+                    header_background: true,
+                    banned_until: true,
+                    created_at: true,
+                    updated_at: true
+                }
+            })
+
+            if (nextStatus === 2) {
+                await tx.user_sessions.updateMany({
+                    where: { user_id: user.id, status: 'active' },
+                    data: { status: 'revoked', last_active_at: new Date() }
+                })
             }
+
+            return user
         })
         
         res.status(200).json({ 
@@ -487,7 +546,8 @@ router.patch('/user/:userId', authMiddleware, adminMiddleware, async (req: Reque
                 ...updatedUser,
                 id: updatedUser.id.toString(),
                 created_at: updatedUser.created_at.toISOString(),
-                updated_at: updatedUser.updated_at.toISOString()
+                updated_at: updatedUser.updated_at.toISOString(),
+                banned_until: updatedUser.banned_until?.toISOString() ?? null
             }
         })
     } catch (error) {

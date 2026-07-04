@@ -35,7 +35,7 @@ export const useFeedStore = defineStore('feed', () => {
         try {
             const article = articles.value.find(a => a.id === articleId)
             if (!article) {
-                const guestId = !userStore.token ? getOrCreateGuestId() : undefined
+                const guestId = !userStore.accessToken ? getOrCreateGuestId() : undefined
                 const response = await getArticleDetails(articleId, guestId)
                 articles.value.push(response.data)
             }
@@ -59,15 +59,40 @@ export const useFeedStore = defineStore('feed', () => {
         return params
     }
 
+    // 将列表接口聚合返回的 likers / comments / comment_total 写入对应的 map
+    // 这样首页信息流一次请求即可渲染，不再对每篇文章单独请求点赞人和评论
+    const applyArticleMeta = (list: articleData[]) => {
+        for (const article of list) {
+            if (article.likers) {
+                articleLikesMap.value[article.id] = article.likers
+            }
+            if (article.comments) {
+                commentsMap.value[article.id] = article.comments
+            }
+            // 用聚合返回的评论总数初始化评论分页状态，与初始评论列表保持一致
+            const total = article.comment_total ?? 0
+            const loaded = countRootComments(article.comments as Comment[] | undefined)
+            commentPagination.value[article.id] = {
+                page: 1,
+                pageSize: 3,
+                total,
+                hasMore: loaded < total,
+                isLoading: false,
+                remaining: Math.max(total - loaded, 0)
+            }
+        }
+    }
+
     // 加载初始文章
     const fetchInitialArticles = async () => {
         // if (articles.value.length > 0) return //防止重复加载文章
         isLoading.value = true
         try {
-            const guestId = !userStore.token ? getOrCreateGuestId() : undefined;
+            const guestId = !userStore.accessToken ? getOrCreateGuestId() : undefined;
 
             const response = await getArticle(buildArticleParams(1), guestId)
             articles.value = response.data.data
+            applyArticleMeta(articles.value)
             page.value = 1
             hasMore.value = articles.value.length < response.data.total
             return true
@@ -86,7 +111,7 @@ export const useFeedStore = defineStore('feed', () => {
         isLoading.value = true
         try {
             const nextPage = page.value + 1
-            const guestId = !userStore.token ? getOrCreateGuestId() : undefined;
+            const guestId = !userStore.accessToken ? getOrCreateGuestId() : undefined;
             const response = await getArticle(buildArticleParams(nextPage), guestId)
 
             // 将新文章数据放入articles数组中
@@ -97,6 +122,7 @@ export const useFeedStore = defineStore('feed', () => {
                 const newArticles = response.data.data.filter((a: articleData) => !existingIds.has(a.id));
 
                 articles.value.push(...newArticles);
+                applyArticleMeta(newArticles)
                 page.value += 1
 
                 hasMore.value = articles.value.length < response.data.total
@@ -154,7 +180,7 @@ export const useFeedStore = defineStore('feed', () => {
         // 修改数据库中
         const id: Ref<number> = ref(1);
         try {
-            if (userStore.token) {
+            if (userStore.accessToken) {
                 // 用户
                 if (article.isLiked) {
                     id.value = messageStore.show('正在点赞', 'loading')
@@ -202,11 +228,41 @@ export const useFeedStore = defineStore('feed', () => {
         }
     }
 
+    const countRootComments = (comments: Comment[] = []) => comments.filter(comment => !comment.parent_id).length
+
+    const appendComment = (articleId: number, newComment: Comment, parentId?: string | null) => {
+        if (!commentsMap.value[articleId]) {
+            commentsMap.value[articleId] = []
+        }
+
+        if (!parentId) {
+            commentsMap.value[articleId].push({ ...newComment, replies: newComment.replies || [] })
+            return
+        }
+
+        for (const comment of commentsMap.value[articleId]) {
+            if (comment.id === parentId) {
+                comment.replies = comment.replies || []
+                comment.replies.push(newComment)
+                return
+            }
+
+            const reply = comment.replies?.find(item => item.id === parentId)
+            if (reply) {
+                comment.replies = comment.replies || []
+                comment.replies.push(newComment)
+                return
+            }
+        }
+
+        commentsMap.value[articleId].push(newComment)
+    }
+
     // 更新 hasMore 状态
     function updateHasMore(articleId: number, total: number) {
-        const currentLength = commentsMap.value[articleId]?.length || 0
+        const currentLength = countRootComments(commentsMap.value[articleId])
         commentPagination.value[articleId].hasMore = currentLength < total
-        commentPagination.value[articleId].remaining = total - currentLength
+        commentPagination.value[articleId].remaining = Math.max(total - currentLength, 0)
     }
     // 获取文章初始评论
     const fetchInitialComments = async (articleId: number) => {
@@ -279,10 +335,12 @@ export const useFeedStore = defineStore('feed', () => {
 
             if (res.data) {
                 const newComment = res.data; //返回的新文章内容)
-                if (!commentsMap.value[payload.articleId]) {
-                    commentsMap.value[payload.articleId] = []
+                appendComment(payload.articleId, newComment, payload.parentId)
+                const state = commentPagination.value[payload.articleId]
+                if (state && !payload.parentId) {
+                    state.total++
+                    updateHasMore(payload.articleId, state.total)
                 }
-                commentsMap.value[payload.articleId].push(newComment)
 
                 const article = articles.value.find(a => a.id === Number(payload.articleId))
                 if (article) {

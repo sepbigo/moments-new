@@ -21,23 +21,56 @@
 
 ## 功能特性
 
-- 🚀 **现代化技术栈**：Vue 3、Vite、TypeScript、Express、Prisma、MySQL
+- 🚀 **现代化技术栈**：Vue 3、Vite、TypeScript、Express 5、Prisma、MySQL
 - 📱 **移动端优先**：适配手机浏览，兼顾桌面端体验
 - 🌓 **浅色/深色模式**：前端支持全局暗色主题与回到顶部
-- 🔐 **认证系统**：JWT 登录认证，支持游客访问与游客互动
-- 📝 **内容发布**：支持文字、图片、视频、视频封面、文章标签
-- 💬 **评论互动**：支持文章评论与回复
+- 🔐 **双 Token 认证**：短时 Access Token + 长效 Refresh Token，支持会话记录与登出，游客可访问与互动
+- 📧 **邮箱验证注册**：注册邮箱验证码 + hCaptcha 人机校验
+- 📝 **内容发布**：支持文字、图片、视频、视频封面、文章标签（TAG）
+- 💬 **评论互动**：支持文章评论、回复与表情
+- 📍 **位置服务**：发布文章时可选地理位置
 - 🖼️ **文件上传**：支持本地上传与 S3 兼容对象存储（如 Cloudflare R2）
-- 🔗 **扩展页面**：友情链接、通知、推广/广告跳转
+- 🔗 **扩展页面**：友情链接独立页面、通知中心、推广/广告跳转
+- 🛠️ **后台管理**：管理员后台界面，管理文章、用户、链接、通知与站点配置
 - 📊 **日志系统**：后端内置上下文日志与 HTTP 请求日志
 
 ## 项目预览
 
+### 前台
+
 | 首页（亮） | 首页（暗） | 文章详情 |
 | :---: | :---: | :---: |
-| <img width="300" alt="首页亮色" src="https://github.com/user-attachments/assets/25231327-80e1-426f-9afd-6a1bf3fce939" /> | <img width="300" alt="首页暗色" src="https://github.com/user-attachments/assets/3ac8fdd8-46f7-4a17-bdfd-080737268c37" /> | <img width="300" alt="文章详情" src="https://github.com/user-attachments/assets/ca4ff306-5aec-4ec9-b06c-e8fb833fa8d6" /> |
-| **推广** | **发布文章** | **用户资料** |
-| <img width="300" alt="推广" src="https://github.com/user-attachments/assets/01710755-98d4-4b43-85b7-1b08a675fa27" /> | <img width="300" alt="发布文章" src="https://github.com/user-attachments/assets/45735944-d30d-4f9e-b05d-1c3017b0774f" /> | <img width="300" alt="用户资料" src="https://github.com/user-attachments/assets/b946afd9-3451-4175-a65a-20647e104b1d" /> |
+| <img width="280" alt="首页亮色" src="https://upload.321521.xyz/desc/home-light.png" /> | <img width="280" alt="首页暗色" src="https://upload.321521.xyz/desc/home-dark.png" /> | <img width="280" alt="文章详情" src="https://upload.321521.xyz/desc/article-detail.png" /> |
+
+| 用户主页 | 个人资料 | 发布文章 |
+| :---: | :---: | :---: |
+| <img width="280" alt="用户主页" src="https://upload.321521.xyz/desc/user-home.png" /> | <img width="280" alt="个人资料" src="https://upload.321521.xyz/desc/profile.png" /> | <img width="280" alt="发布文章" src="https://upload.321521.xyz/desc/post-article.png" /> |
+
+| 消息通知 | 友情链接 | 推广跳转 |
+| :---: | :---: | :---: |
+| <img width="280" alt="消息通知" src="https://upload.321521.xyz/desc/notifications.png" /> | <img width="280" alt="友情链接" src="https://upload.321521.xyz/desc/links.png" /> | <img width="280" alt="推广跳转" src="https://upload.321521.xyz/desc/promote.png" /> |
+
+| 账密登录 | 邮箱验证码登录 | 注册 |
+| :---: | :---: | :---: |
+| <img width="280" alt="账密登录" src="https://upload.321521.xyz/desc/login.png" /> | <img width="280" alt="邮箱验证码登录" src="https://upload.321521.xyz/desc/login-email.png" /> | <img width="280" alt="注册" src="https://upload.321521.xyz/desc/register.png" /> |
+
+### 后台
+
+| 控制台 | 用户管理 | 文章管理 |
+| :---: | :---: | :---: |
+| <img width="280" alt="控制台" src="https://upload.321521.xyz/desc/admin-dashboard.png" /> | <img width="280" alt="用户管理" src="https://upload.321521.xyz/desc/admin-user.png" /> | <img width="280" alt="文章管理" src="https://upload.321521.xyz/desc/admin-article.png" /> |
+
+| 评论管理 | 友链管理 | 用户设置 |
+| :---: | :---: | :---: |
+| <img width="280" alt="评论管理" src="https://upload.321521.xyz/desc/admin-comment.png" /> | <img width="280" alt="友链管理" src="https://upload.321521.xyz/desc/admin-link.png" /> | <img width="280" alt="用户设置" src="https://upload.321521.xyz/desc/admin-setting-user.png" /> |
+
+| 邮箱配置 | 验证设置 | 上传设置 |
+| :---: | :---: | :---: |
+| <img width="280" alt="邮箱配置" src="https://upload.321521.xyz/desc/admin-setting-email.png" /> | <img width="280" alt="验证设置" src="https://upload.321521.xyz/desc/admin-setting-verify.png" /> | <img width="280" alt="上传设置" src="https://upload.321521.xyz/desc/admin-setting-upload.png" /> |
+
+| 基础设置 | 其他设置 |
+| :---: | :---: |
+| <img width="360" alt="基础设置" src="https://upload.321521.xyz/desc/admin-setting-basic.png" /> | <img width="360" alt="其他设置" src="https://upload.321521.xyz/desc/admin-setting-other.png" /> |
 
 ## 技术栈
 
@@ -85,8 +118,8 @@ moments/
 │       ├── services/     # 业务服务
 │       └── middleware/   # 中间件
 ├── momentsQuickDeploy/   # 快速部署目录
-├── doc/                  # 项目文档
-└── build.sh              # 构建部署产物脚本
+├── docs/                # 项目文档
+└── build.sh             # 构建部署产物脚本
 ```
 
 ## 环境要求
@@ -116,15 +149,17 @@ cp .env.example .env
 编辑 `backend/.env`，配置数据库与密钥：
 
 ```env
+# 程序监听地址和端口
 HOST=0.0.0.0
 PORT=9889
+
+# 密钥（越复杂越好）
 JWT_SECRET=demo_jwt_secret
-DB_HOST=127.0.0.1
-DB_PORT=3306
-DB_USERNAME=demo
-DB_PASSWORD=123456
-DB_DATABASE=demo
-DATABASE_URL="mysql://${DB_USERNAME}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_DATABASE}"
+JWT_ACCESS_EXPIRES_SECONDS=7200
+JWT_REFRESH_EXPIRES_SECONDS=2592000
+
+# MySQL数据库配置
+DATABASE_URL="mysql://root:123456@127.0.0.1:3306/moment"
 ```
 
 初始化数据库并启动服务：
@@ -176,7 +211,7 @@ pnpm run db:setup  # 生成 Prisma Client、执行迁移并写入种子数据
 
 ## 部署说明
 
-更多部署方式请查看：[快速部署文档](doc/quickDeploy-readme.md)。
+更多部署方式请查看：[快速部署文档](docs/quickDeploy-readme.md)。
 
 ### 前后端同域部署
 
@@ -228,9 +263,9 @@ location / {
 
 ## 相关文档
 
-- [快速部署](doc/quickDeploy-readme.md)
-- [Docker 部署](doc/docker-readme.md)
-- [更新计划](doc/update.md)
+- [快速部署](docs/quickDeploy-readme.md)
+- [Docker 部署](docs/docker-readme.md)
+- [更新计划](docs/update.md)
 - [后端环境变量示例](backend/.env.example)
 - [前端环境变量示例](frontend/.env.example)
 

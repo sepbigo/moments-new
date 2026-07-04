@@ -1,5 +1,5 @@
 <script setup lang="ts" name="Media">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed, reactive } from 'vue'
 import type { articleImageItem, articleVideoItem } from '@/types/article';
 import { useMessageStore } from '@/store/message';
 import { Icon } from '@vicons/utils';
@@ -125,6 +125,22 @@ onUnmounted(() => {
         videoRef.value.removeEventListener('pause', handlePause)
     }
 })
+
+// 单图按原始比例展示：记录每张图的自然宽高，用于判定横/竖图
+const imageSizes = reactive<Record<string, { width: number; height: number }>>({})
+function onImgLoad(e: Event, image: articleImageItem) {
+    const img = e.target as HTMLImageElement
+    if (img.naturalWidth && img.naturalHeight) {
+        imageSizes[image.image_url] = { width: img.naturalWidth, height: img.naturalHeight }
+    }
+}
+// 仅在单图时返回方向，用于布局区分
+function singleImageOrientation(image: articleImageItem): 'landscape' | 'portrait' | null {
+    if (processedImages.value.length !== 1) return null
+    const size = imageSizes[image.image_url]
+    if (!size) return null
+    return size.width > size.height ? 'landscape' : 'portrait'
+}
 </script>
 
 <template>
@@ -139,10 +155,14 @@ onUnmounted(() => {
 
         <!-- 文章的图片展示 -->
         <ul v-if="processedImages.length !== 0">
-            <li v-for="(image, index) in processedImages" :key="image.id" @click="showImage(image.image_url)"
+            <li v-for="(image, index) in processedImages" :key="image.id" :class="{
+                'single-landscape': singleImageOrientation(image) === 'landscape',
+                'single-portrait': singleImageOrientation(image) === 'portrait'
+            }" @click="showImage(image.image_url)"
                 @dragstart="onDragStart(index)" @dragover="onDragOver" @drop="onDrop(index)" @dragend="onDragEnd">
                 <div class="image-wrapper">
-                    <img :src="image.image_url" alt="文章图片" @click="showImage(image.image_url)" />
+                    <img :src="image.image_url" alt="文章图片" @click="showImage(image.image_url)"
+                        @load="onImgLoad($event, image)" />
                     <!-- 删除按钮 -->
                     <Icon class="delete-btn" v-if="props.upload" @click.stop="$emit('remove:image', index)">
                         <TrashAltRegular />
@@ -192,6 +212,29 @@ li {
     width: 28%;
     aspect-ratio: 1/1;
     cursor: pointer;
+}
+
+/* 单图按原始比例展示：横图宽 60%，竖图宽 28%，高度自适应 */
+li.single-landscape {
+    width: 60%;
+    aspect-ratio: auto;
+}
+
+li.single-portrait {
+    width: 28%;
+    aspect-ratio: auto;
+}
+
+li.single-landscape .image-wrapper,
+li.single-portrait .image-wrapper {
+    height: auto;
+}
+
+li.single-landscape img,
+li.single-portrait img {
+    width: 100%;
+    height: auto;
+    object-fit: contain;
 }
 
 img {
