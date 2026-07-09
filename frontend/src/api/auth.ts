@@ -1,5 +1,27 @@
 import service from '@/api/request'
 import type { registerData, loginData, emailLoginData, resetPasswordData } from '@/types/user'
+
+export type OAuthProvider = 'linux_do' | 'rainbow'
+
+export type OAuthProfile = {
+    provider: OAuthProvider
+    providerType?: string | null
+    providerUserId: string
+    nickname?: string | null
+    avatar?: string | null
+    email?: string | null
+}
+
+export type OAuthCallbackPayload = {
+    accessToken?: string
+    refreshToken?: string
+    expiresIn?: number
+    needBind?: boolean
+    oauthTicket?: string
+    profile?: OAuthProfile
+}
+
+export const getApiBaseUrl = () => (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
 // 注册
 export const register = (data: registerData) => {
     return service({
@@ -32,6 +54,24 @@ export const refreshAccessToken = (refreshToken: string) => {
         url: '/auth/refresh',
         method: 'post',
         data: { refreshToken },
+    })
+}
+
+// 当前登录用户绑定 OAuth 身份
+export const bindOAuthAccount = (oauthTicket: string) => {
+    return service({
+        url: '/auth/oauth/bind',
+        method: 'post',
+        data: { oauthTicket },
+    })
+}
+
+// 注册新账号并绑定 OAuth 身份
+export const registerAndBindOAuth = (data: registerData & { oauthTicket: string }) => {
+    return service({
+        url: '/auth/oauth/register-bind',
+        method: 'post',
+        data,
     })
 }
 

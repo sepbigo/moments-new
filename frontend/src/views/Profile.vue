@@ -1,17 +1,22 @@
 <script setup lang="ts" name="Profile">
-import { computed, reactive } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import AvatarImage from '@/components/utils/AvatarImage.vue';
 import { ChevronLeft, ChevronRight } from '@vicons/fa';
 import { Icon } from '@vicons/utils';
 import router from '@/router';
 import { useUserStore } from '@/store/user';
 import { useMessageStore } from '@/store/message';
-import { updateUserInfo, changePassword } from '@/api/users';
+import { updateUserInfo, changePassword, getOAuthAccounts, type OAuthAccount } from '@/api/users';
 import type { updateUserInfoData, updatePasswordData } from '@/types/user';
 import { isAxiosError } from 'axios';
+import { useDefaultStore } from '@/store/default';
+import { getApiBaseUrl } from '@/api/auth';
+import { uploadFiles } from '@/api/upload';
 
 const userStore = useUserStore()
 const messageStore = useMessageStore()
+const defaultStore = useDefaultStore()
+const oauthAccounts = ref<OAuthAccount[]>([])
 const states = reactive({
   avatar: false,
   header_background: false,
@@ -21,7 +26,8 @@ const states = reactive({
   username: false,
   email: false,
   brief: false,
-  password: false
+  password: false,
+  oauth: false
 })
 const userData = reactive({
   avatar: computed(() => userStore.profile?.avatar ?? '/img/avatar.jpg'),
@@ -50,6 +56,42 @@ const updatingStates = reactive({
   brief: false,
   status: false,
 })
+const uploadingStates = reactive({
+  avatar: false,
+  header_background: false,
+})
+function getProfileUploadUrl() {
+  return defaultStore.configs.upload_method === '1' ? '/upload/profile/s3' : '/upload/profile'
+}
+
+async function handleProfileImageUpload(key: 'avatar' | 'header_background', event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  if (!file.type.startsWith('image/')) {
+    messageStore.show('请选择图片文件', 'info', 2000)
+    return
+  }
+
+  const formData = new FormData()
+  formData.append('files', file)
+  const id = messageStore.show('正在上传图片', 'loading')
+  try {
+    uploadingStates[key] = true
+    const response = await uploadFiles(formData, getProfileUploadUrl())
+    const url = response.data?.paths?.[0]
+    if (!url) throw new Error('未获取到上传地址')
+    editData[key] = url
+    messageStore.update(id, { text: '上传成功，请确认后更新', type: 'success', duration: 2000 })
+  } catch (error) {
+    console.error('上传用户资料图片失败', error)
+    messageStore.update(id, { text: '上传失败，请稍后重试', type: 'error', duration: 2000 })
+  } finally {
+    uploadingStates[key] = false
+  }
+}
+
 // 更新信息
 async function haldleUpdate(key: keyof updateUserInfoData, value: string) {
   if (updatingStates[key]) {
@@ -97,11 +139,61 @@ const haldleUpdatePassword = async (data: updatePasswordData) => {
     }
   }
 }
+async function fetchOAuthAccounts() {
+  try {
+    const res = await getOAuthAccounts()
+    oauthAccounts.value = res.data
+  } catch (error) {
+    console.error('获取第三方账号绑定失败', error)
+  }
+}
+
+function oauthLoginUrl(path: string) {
+  return `${getApiBaseUrl()}${path}`
+}
+
+function startOAuthBind(provider: 'linux_do' | 'rainbow', type?: string) {
+  const path = provider === 'linux_do'
+    ? '/auth/oauth/linux-do/login?redirect=1'
+    : `/auth/oauth/rainbow/${encodeURIComponent(type || '')}/login?redirect=1`
+  sessionStorage.setItem('moments_oauth_return_path', `${window.location.pathname}${window.location.search}${window.location.hash}` || '/profile')
+  sessionStorage.setItem('moments_oauth_bind_current', '1')
+  window.location.href = oauthLoginUrl(path)
+}
+
+const hasLinuxDo = computed(() => oauthAccounts.value.some(account => account.provider === 'linux_do'))
+function hasRainbowType(type: string) {
+  return oauthAccounts.value.some(account => account.provider === 'rainbow' && account.providerType === type)
+}
+const rainbowTypes = computed(() => String(defaultStore.configs.rainbow_oauth2_type || '').split(',').map(item => item.trim()).filter(Boolean))
+function oauthDisplayName(account: OAuthAccount) {
+  if (account.provider === 'linux_do') return 'Linux.Do'
+  if (account.provider === 'rainbow') return `${(account.providerType || '彩虹').toUpperCase()} 登录`
+  return account.provider
+}
+function oauthAccountIcon(account: OAuthAccount) {
+  if (account.provider === 'linux_do') return '/img/linux_do.png'
+  if (account.provider === 'rainbow' && ['qq', 'wx', 'alipay'].includes(account.providerType || '')) {
+    return `/img/${account.providerType}.svg`
+  }
+  return ''
+}
+
 function handleLogout() {
   userStore.handleLogout()
   messageStore.show('已退出登录', 'success', 2000)
   router.replace('/')
 }
+
+onMounted(async () => {
+  await defaultStore.getPublicConfig()
+  await fetchOAuthAccounts()
+  window.addEventListener('moments-oauth-bound', fetchOAuthAccounts)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('moments-oauth-bound', fetchOAuthAccounts)
+})
 </script>
 
 <template>
@@ -125,8 +217,12 @@ function handleLogout() {
           </Icon>
         </div>
       </div>
-      <div v-if="states.avatar" class="input">
+      <div v-if="states.avatar" class="input profile-image-input">
         <input type="text" placeholder="请输入 新头像url" v-model="editData.avatar">
+        <label class="upload-label">
+          上传
+          <input type="file" accept="image/*" @change="handleProfileImageUpload('avatar', $event)">
+        </label>
         <button @click="haldleUpdate('avatar', editData.avatar)">更新</button>
       </div>
 
@@ -140,8 +236,12 @@ function handleLogout() {
           </Icon>
         </div>
       </div>
-      <div v-if="states.header_background" class="input">
+      <div v-if="states.header_background" class="input profile-image-input">
         <input type="text" placeholder="请输入 新背景url" v-model="editData.header_background">
+        <label class="upload-label">
+          上传
+          <input type="file" accept="image/*" @change="handleProfileImageUpload('header_background', $event)">
+        </label>
         <button @click="haldleUpdate('header_background', editData.header_background)">更新</button>
       </div>
 
@@ -245,6 +345,49 @@ function handleLogout() {
         <button @click="haldleUpdate('brief', editData.brief)">更新</button>
       </div>
 
+      <div class="body-item" @click="states.oauth = !states.oauth">
+        <div class="body-item-left">第三方登录</div>
+        <div class="body-item-right">
+          <span>{{ oauthAccounts.length ? `已绑定 ${oauthAccounts.length} 个` : '未绑定' }}</span>
+          <Icon :class="['icon', { 'rotate-icon': states.oauth }]">
+            <ChevronRight />
+          </Icon>
+        </div>
+      </div>
+      <div v-if="states.oauth" class="oauth-panel">
+        <div v-if="oauthAccounts.length" class="oauth-list">
+          <div v-for="account in oauthAccounts" :key="account.id" class="oauth-account">
+            <span class="oauth-account-name">
+              <img v-if="oauthAccountIcon(account)" :src="oauthAccountIcon(account)" alt="">
+              {{ oauthDisplayName(account) }}
+            </span>
+            <small>{{ account.nickname || account.email || '已绑定' }}</small>
+          </div>
+        </div>
+        <div v-else class="oauth-empty">暂未绑定第三方账号</div>
+        <div class="oauth-actions">
+          <button
+            v-if="defaultStore.configs.linux_do_oauth2 === '1' && !hasLinuxDo"
+            class="oauth-bind-btn"
+            @click="startOAuthBind('linux_do')"
+          >
+            <img :src="'/img/linux_do.png'" alt="">绑定 Linux.Do
+          </button>
+          <template v-if="defaultStore.configs.rainbow_oauth2 === '1'">
+            <button
+              v-for="type in rainbowTypes"
+              v-show="!hasRainbowType(type)"
+              :key="type"
+              class="oauth-bind-btn"
+              @click="startOAuthBind('rainbow', type)"
+            >
+              <img v-if="['qq', 'wx', 'alipay'].includes(type)" :src="`/img/${type}.svg`" alt="">
+              绑定 {{ type.toUpperCase() }}
+            </button>
+          </template>
+        </div>
+      </div>
+
       <div class="body-backend" v-if="userStore.profile?.role == '1'" @click="router.push({name: 'admin'})">
         <div>进入后台</div>
       </div>
@@ -328,6 +471,79 @@ function handleLogout() {
   cursor: pointer;
 }
 
+.oauth-panel {
+  padding: 10px 20px 12px;
+  box-shadow: 0 0.6px 0 0 #cccccc62;
+}
+
+.oauth-list {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.oauth-account {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 5px;
+  background: var(--color-ad);
+  font-size: 13px;
+}
+
+.oauth-account-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.oauth-account-name img {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+}
+
+.oauth-account small,
+.oauth-empty {
+  color: var(--color-profile-item-right);
+  font-size: 12px;
+}
+
+.oauth-empty {
+  margin-bottom: 10px;
+}
+
+.oauth-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.oauth-bind-btn {
+  align-self: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 6px 10px;
+  color: var(--color-text-primary);
+  background: var(--color-ad);
+  font-size: 12px;
+}
+
+.oauth-bind-btn img {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+}
+
+.oauth-bind-btn:hover {
+  color: #fff;
+  background: #6cadf1;
+}
+
 .body-logout, .body-backend {
   display: flex;
   flex-direction: column;
@@ -380,6 +596,49 @@ button {
 
 button:hover {
   background: #f8bc99;
+}
+
+.profile-image-input {
+  gap: 8px;
+  padding-right: 15px;
+}
+
+.profile-image-input input[type="text"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+}
+
+.profile-image-input button,
+.upload-label {
+  flex: 0 0 54px;
+  width: 54px;
+  min-height: 28px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  margin: 5px 0;
+  padding: 4px 0;
+  border-radius: 5px;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.upload-label {
+  color: #fff;
+  background: #6cadf1;
+}
+
+.upload-label:hover {
+  cursor: pointer;
+  background: #f8bc99;
+}
+
+.upload-label input {
+  display: none;
 }
 
 .icon {

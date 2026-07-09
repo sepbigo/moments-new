@@ -53,6 +53,12 @@ const adminRoutes: RouteRecordRaw[] = [
                         meta: {title: '上传设置'}
                     },
                     {
+                        path:'oauth',
+                        name: 'admin-seeting-oauth',
+                        component: () => import('@/components/admin/Setting/OAuth.vue'),
+                        meta: {title: 'OAuth 登录'}
+                    },
+                    {
                         path:'other',
                         name: 'admin-seeting-other',
                         component: () => import('@/components/admin/Setting/Other.vue'),
