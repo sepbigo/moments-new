@@ -1,0 +1,335 @@
+import axios from 'axios'
+import jwt from 'jsonwebtoken'
+import type { Request } from 'express'
+import type { Prisma } from '@prisma/client'
+import { prisma } from '../lib/prisma.js'
+import { authService, buildDeviceFingerprint, ensureLoginAllowedUser } from './auth.service.js'
+import { Logger } from '../utils/logger.js'
+
+const logger = new Logger('OAuthService')
+
+export type OAuthProvider = 'linux_do' | 'rainbow'
+
+export type OAuthProfile = {
+  provider: OAuthProvider
+  providerType?: string | null
+  providerUserId: string
+  nickname?: string | null
+  avatar?: string | null
+  email?: string | null
+  accessToken?: string | null
+  refreshToken?: string | null
+  rawProfile?: unknown
+}
+
+export type OAuthTicketPayload = {
+  scope: 'oauth_bind'
+  provider: OAuthProvider
+  providerType?: string | null
+  providerUserId: string
+  nickname?: string | null
+  avatar?: string | null
+  email?: string | null
+}
+
+type TokenResponse = Awaited<ReturnType<typeof authService.issueTokenPair>>
+
+type OAuthLoginResult = TokenResponse | {
+  needBind: true
+  oauthTicket: string
+  profile: {
+    provider: OAuthProvider
+    providerType?: string | null
+    providerUserId: string
+    nickname?: string | null
+    avatar?: string | null
+    email?: string | null
+  }
+}
+
+const LINUX_DO_AUTHORIZE_URL = 'https://connect.linux.do/oauth2/authorize'
+const LINUX_DO_TOKEN_URL = 'https://connect.linux.do/oauth2/token'
+const LINUX_DO_USERINFO_URL = 'https://connect.linux.do/api/user'
+const DEFAULT_RAINBOW_CONNECT_URL = 'https://u.xiaobaixuan.com/connect.php'
+const OAUTH_TICKET_EXPIRES_SECONDS = 10 * 60
+
+function getJwtSecret() {
+  const secret = process.env.JWT_SECRET
+  if (!secret) throw new Error('.env 文件中未定义 JWT_SECRET')
+  return secret
+}
+
+async function getConfigValue(key: string) {
+  const config = await prisma.config.findUnique({ where: { k: key }, select: { v: true } })
+  return config?.v ?? ''
+}
+
+function getRequestOrigin(req: Request) {
+  const protocol = req.protocol || 'http'
+  const host = req.get('host') || ''
+  return `${protocol}://${host}`
+}
+
+function normalizeProviderType(type: unknown) {
+  return typeof type === 'string' ? type.trim().toLowerCase() : ''
+}
+
+function buildCallbackUrl(req: Request, path: string) {
+  return new URL(path, getRequestOrigin(req)).toString()
+}
+
+async function getRainbowConnectUrl() {
+  const configuredUrl = (await getConfigValue('rainbow_oauth2_api_url')).trim()
+  return configuredUrl || DEFAULT_RAINBOW_CONNECT_URL
+}
+
+export class OAuthService {
+  signTicket(profile: OAuthProfile) {
+    const payload: OAuthTicketPayload = {
+      scope: 'oauth_bind',
+      provider: profile.provider,
+      providerType: profile.providerType ?? null,
+      providerUserId: profile.providerUserId,
+      nickname: profile.nickname ?? null,
+      avatar: profile.avatar ?? null,
+      email: profile.email ?? null,
+    }
+
+    return jwt.sign(payload, getJwtSecret(), { expiresIn: OAUTH_TICKET_EXPIRES_SECONDS })
+  }
+
+  verifyTicket(ticket: string): OAuthTicketPayload {
+    const decoded = jwt.verify(ticket, getJwtSecret()) as OAuthTicketPayload
+    if (decoded.scope !== 'oauth_bind' || !decoded.provider || !decoded.providerUserId) {
+      throw new Error('Invalid oauth ticket')
+    }
+    return decoded
+  }
+
+  async buildLinuxDoAuthorizeUrl(req: Request) {
+    const enabled = await getConfigValue('linux_do_oauth2')
+    if (enabled !== '1') throw new Error('Linux.Do OAuth 未启用')
+
+    const clientId = await getConfigValue('linux_do_client_id')
+    if (!clientId) throw new Error('Linux.Do OAuth Client ID 未配置')
+
+    const configuredRedirectUri = await getConfigValue('oauth2_redirect_uri')
+    const redirectUri = configuredRedirectUri || buildCallbackUrl(req, '/api/auth/callback')
+    const state = jwt.sign({ scope: 'oauth_state', provider: 'linux_do' }, getJwtSecret(), { expiresIn: 10 * 60 })
+
+    const url = new URL(LINUX_DO_AUTHORIZE_URL)
+    url.searchParams.set('client_id', clientId)
+    url.searchParams.set('redirect_uri', redirectUri)
+    url.searchParams.set('response_type', 'code')
+    url.searchParams.set('scope', 'openid profile email')
+    url.searchParams.set('state', state)
+    return url.toString()
+  }
+
+  async fetchLinuxDoProfile(input: { code: string; state?: string; req: Request }): Promise<OAuthProfile> {
+    if (input.state) {
+      const state = jwt.verify(input.state, getJwtSecret()) as { scope?: string; provider?: string }
+      if (state.scope !== 'oauth_state' || state.provider !== 'linux_do') {
+        throw new Error('Invalid oauth state')
+      }
+    }
+
+    const clientId = await getConfigValue('linux_do_client_id')
+    const clientSecret = await getConfigValue('linux_do_client_secret')
+    const configuredRedirectUri = await getConfigValue('oauth2_redirect_uri')
+    const redirectUri = configuredRedirectUri || buildCallbackUrl(input.req, '/api/auth/callback')
+    if (!clientId || !clientSecret) throw new Error('Linux.Do OAuth 未完整配置')
+
+    const tokenResponse = await axios.post(LINUX_DO_TOKEN_URL, new URLSearchParams({
+      grant_type: 'authorization_code',
+      code: input.code,
+      redirect_uri: redirectUri,
+      client_id: clientId,
+      client_secret: clientSecret,
+    }), {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      timeout: 10000,
+    })
+
+    const accessToken = String(tokenResponse.data?.access_token || '')
+    if (!accessToken) throw new Error('Linux.Do OAuth 未返回 access_token')
+
+    const userResponse = await axios.get(LINUX_DO_USERINFO_URL, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      timeout: 10000,
+    })
+    const profile = userResponse.data ?? {}
+    const providerUserId = String(profile.sub || '')
+    if (!providerUserId) throw new Error('Linux.Do OAuth 未返回用户标识')
+
+    return {
+      provider: 'linux_do',
+      providerType: null,
+      providerUserId,
+      nickname: profile.name || profile.username || profile.login || null,
+      avatar: profile.avatar_url || null,
+      email: profile.email || null,
+      accessToken,
+      refreshToken: tokenResponse.data?.refresh_token || null,
+      rawProfile: profile,
+    }
+  }
+
+  async buildRainbowLoginUrl(req: Request, rawType: unknown) {
+    const enabled = await getConfigValue('rainbow_oauth2')
+    if (enabled !== '1') throw new Error('彩虹聚合登录未启用')
+
+    const type = normalizeProviderType(rawType)
+    const allowedTypes = (await getConfigValue('rainbow_oauth2_type')).split(',').map(item => item.trim()).filter(Boolean)
+    if (!type || !allowedTypes.includes(type)) throw new Error('不支持的彩虹聚合登录平台')
+
+    const appid = await getConfigValue('rainbow_oauth2_appid')
+    const appkey = await getConfigValue('rainbow_oauth2_appkey')
+    if (!appid || !appkey) throw new Error('彩虹聚合登录未完整配置')
+
+    const configuredRedirectUri = await getConfigValue('oauth2_redirect_uri')
+    const redirectUri = configuredRedirectUri || buildCallbackUrl(req, '/api/auth/callback')
+    const connectUrl = await getRainbowConnectUrl()
+    const response = await axios.get(connectUrl, {
+      params: { act: 'login', appid, appkey, type, redirect_uri: redirectUri },
+      timeout: 10000,
+    })
+    if (response.data?.code !== 0 || !response.data?.url) {
+      throw new Error(response.data?.msg || '获取彩虹聚合登录地址失败')
+    }
+
+    return {
+      type,
+      url: String(response.data.url),
+      qrcode: response.data.qrcode ? String(response.data.qrcode) : undefined,
+    }
+  }
+
+  async fetchRainbowProfile(input: { code: string; type: unknown }): Promise<OAuthProfile> {
+    const type = normalizeProviderType(input.type)
+    if (!type) throw new Error('缺少彩虹聚合登录平台')
+
+    const appid = await getConfigValue('rainbow_oauth2_appid')
+    const appkey = await getConfigValue('rainbow_oauth2_appkey')
+    if (!appid || !appkey) throw new Error('彩虹聚合登录未完整配置')
+
+    const connectUrl = await getRainbowConnectUrl()
+    const response = await axios.get(connectUrl, {
+      params: { act: 'callback', appid, appkey, type, code: input.code },
+      timeout: 10000,
+    })
+    const data = response.data ?? {}
+    if (data.code !== 0) throw new Error(data.msg || '彩虹聚合登录回调失败')
+
+    const providerUserId = String(data.social_uid || '')
+    if (!providerUserId) throw new Error('彩虹聚合登录未返回用户标识')
+
+    return {
+      provider: 'rainbow',
+      providerType: type,
+      providerUserId,
+      nickname: data.nickname || null,
+      avatar: data.faceimg || null,
+      email: null,
+      accessToken: data.access_token || null,
+      rawProfile: data,
+    }
+  }
+
+  async loginOrCreateTicket(profile: OAuthProfile, req: Request): Promise<OAuthLoginResult> {
+    const account = await prisma.user_oauth_accounts.findUnique({
+      where: {
+        provider_provider_type_provider_user_id: {
+          provider: profile.provider,
+          provider_type: profile.providerType ?? '',
+          provider_user_id: profile.providerUserId,
+        },
+      },
+      include: { user: true },
+    })
+
+    if (account) {
+      const user = await ensureLoginAllowedUser(account.user_id)
+      if (!user) throw new Error('用户状态异常，无法登录')
+
+      await prisma.user_oauth_accounts.update({
+        where: { id: account.id },
+        data: {
+          nickname: profile.nickname ?? account.nickname,
+          avatar: profile.avatar ?? account.avatar,
+          email: profile.email ?? account.email,
+          access_token: profile.accessToken ?? account.access_token,
+          refresh_token: profile.refreshToken ?? account.refresh_token,
+          raw_profile: profile.rawProfile === undefined ? account.raw_profile as Prisma.InputJsonValue : profile.rawProfile as Prisma.InputJsonValue,
+          last_login_at: new Date(),
+        },
+      })
+
+      return authService.issueTokenPair({
+        userId: account.user_id,
+        deviceFingerprint: buildDeviceFingerprint(req),
+      })
+    }
+
+    return {
+      needBind: true,
+      oauthTicket: this.signTicket(profile),
+      profile: {
+        provider: profile.provider,
+        providerType: profile.providerType ?? null,
+        providerUserId: profile.providerUserId,
+        nickname: profile.nickname ?? null,
+        avatar: profile.avatar ?? null,
+        email: profile.email ?? null,
+      },
+    }
+  }
+
+  async bindTicketToUser(input: { ticket: string; userId: bigint }) {
+    const ticket = this.verifyTicket(input.ticket)
+    const existing = await prisma.user_oauth_accounts.findUnique({
+      where: {
+        provider_provider_type_provider_user_id: {
+          provider: ticket.provider,
+          provider_type: ticket.providerType ?? '',
+          provider_user_id: ticket.providerUserId,
+        },
+      },
+    })
+
+    if (existing && existing.user_id !== input.userId) {
+      throw new Error('该第三方账号已绑定其他用户')
+    }
+
+    const account = await prisma.user_oauth_accounts.upsert({
+      where: {
+        provider_provider_type_provider_user_id: {
+          provider: ticket.provider,
+          provider_type: ticket.providerType ?? '',
+          provider_user_id: ticket.providerUserId,
+        },
+      },
+      create: {
+        user_id: input.userId,
+        provider: ticket.provider,
+        provider_type: ticket.providerType ?? '',
+        provider_user_id: ticket.providerUserId,
+        nickname: ticket.nickname ?? null,
+        avatar: ticket.avatar ?? null,
+        email: ticket.email ?? null,
+        last_login_at: new Date(),
+      },
+      update: {
+        nickname: ticket.nickname ?? undefined,
+        avatar: ticket.avatar ?? undefined,
+        email: ticket.email ?? undefined,
+        last_login_at: new Date(),
+      },
+    })
+
+    logger.log(`OAuth 账号绑定成功：${account.provider}/${account.provider_type}/${account.provider_user_id} -> user ${input.userId.toString()}`)
+    return account
+  }
+}
+
+export const oauthService = new OAuthService()

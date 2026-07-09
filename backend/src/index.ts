@@ -64,6 +64,10 @@ app.use(((err, _req, res, _next) => {
     })
 }) as express.ErrorRequestHandler)
 
+app.use('/api', (_req, res) => {
+    res.status(404).json({ error: '接口不存在' })
+})
+
 app.get(/.*/, (req, res) => {
   res.sendFile(path.join(__dirname, '../public', 'index.html'));
 });
