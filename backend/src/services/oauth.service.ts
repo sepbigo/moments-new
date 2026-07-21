@@ -8,7 +8,7 @@ import { Logger } from '../utils/logger.js'
 
 const logger = new Logger('OAuthService')
 
-export type OAuthProvider = 'linux_do' | 'rainbow'
+export type OAuthProvider = 'linux_do' | 'nodeloc' | 'rainbow'
 
 export type OAuthProfile = {
   provider: OAuthProvider
@@ -50,6 +50,7 @@ type OAuthLoginResult = TokenResponse | {
 const LINUX_DO_AUTHORIZE_URL = 'https://connect.linux.do/oauth2/authorize'
 const LINUX_DO_TOKEN_URL = 'https://connect.linux.do/oauth2/token'
 const LINUX_DO_USERINFO_URL = 'https://connect.linux.do/api/user'
+const DEFAULT_NODELOC_URL = 'https://www.nodeloc.com'
 const DEFAULT_RAINBOW_CONNECT_URL = 'https://u.xiaobaixuan.com/connect.php'
 const OAUTH_TICKET_EXPIRES_SECONDS = 10 * 60
 
@@ -81,6 +82,15 @@ function buildCallbackUrl(req: Request, path: string) {
 async function getRainbowConnectUrl() {
   const configuredUrl = (await getConfigValue('rainbow_oauth2_api_url')).trim()
   return configuredUrl || DEFAULT_RAINBOW_CONNECT_URL
+}
+
+async function getNodelocBaseUrl() {
+  const configuredUrl = (await getConfigValue('nodeloc_url')).trim().replace(/\/$/, '')
+  return configuredUrl || DEFAULT_NODELOC_URL
+}
+
+function isOAuthStateProvider(provider: string): provider is OAuthProvider {
+  return provider === 'linux_do' || provider === 'nodeloc' || provider === 'rainbow'
 }
 
 export class OAuthService {
@@ -173,6 +183,111 @@ export class OAuthService {
       refreshToken: tokenResponse.data?.refresh_token || null,
       rawProfile: profile,
     }
+  }
+
+  async buildNodelocAuthorizeUrl(req: Request) {
+    const enabled = await getConfigValue('nodeloc_oauth2')
+    if (enabled !== '1') throw new Error('NodeLoc OAuth 未启用')
+
+    const clientId = await getConfigValue('nodeloc_client_id')
+    if (!clientId) throw new Error('NodeLoc OAuth Client ID 未配置')
+
+    const baseUrl = await getNodelocBaseUrl()
+    const configuredRedirectUri = await getConfigValue('oauth2_redirect_uri')
+    const redirectUri = configuredRedirectUri || buildCallbackUrl(req, '/api/auth/callback')
+    const state = jwt.sign({ scope: 'oauth_state', provider: 'nodeloc' }, getJwtSecret(), { expiresIn: 10 * 60 })
+
+    const url = new URL(`${baseUrl}/oauth-provider/authorize`)
+    url.searchParams.set('client_id', clientId)
+    url.searchParams.set('redirect_uri', redirectUri)
+    url.searchParams.set('response_type', 'code')
+    // email scope 需要 NodeLoc 管理员审核，默认只申请 openid + profile
+    url.searchParams.set('scope', 'openid profile')
+    url.searchParams.set('state', state)
+    return url.toString()
+  }
+
+  async fetchNodelocProfile(input: { code: string; state?: string; req: Request }): Promise<OAuthProfile> {
+    if (input.state) {
+      const state = jwt.verify(input.state, getJwtSecret()) as { scope?: string; provider?: string }
+      if (state.scope !== 'oauth_state' || state.provider !== 'nodeloc') {
+        throw new Error('Invalid oauth state')
+      }
+    }
+
+    const clientId = await getConfigValue('nodeloc_client_id')
+    const clientSecret = await getConfigValue('nodeloc_client_secret')
+    const configuredRedirectUri = await getConfigValue('oauth2_redirect_uri')
+    const redirectUri = configuredRedirectUri || buildCallbackUrl(input.req, '/api/auth/callback')
+    if (!clientId || !clientSecret) throw new Error('NodeLoc OAuth 未完整配置')
+
+    const baseUrl = await getNodelocBaseUrl()
+    const tokenResponse = await axios.post(`${baseUrl}/oauth-provider/token`, new URLSearchParams({
+      grant_type: 'authorization_code',
+      code: input.code,
+      redirect_uri: redirectUri,
+      client_id: clientId,
+      client_secret: clientSecret,
+    }), {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      timeout: 10000,
+    })
+
+    const accessToken = String(tokenResponse.data?.access_token || '')
+    if (!accessToken) throw new Error('NodeLoc OAuth 未返回 access_token')
+
+    const userResponse = await axios.get(`${baseUrl}/oauth-provider/userinfo`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      timeout: 10000,
+    })
+    const profile = userResponse.data ?? {}
+    const providerUserId = String(profile.id ?? profile.sub ?? '')
+    if (!providerUserId) throw new Error('NodeLoc OAuth 未返回用户标识')
+
+    return {
+      provider: 'nodeloc',
+      providerType: null,
+      providerUserId,
+      nickname: profile.name || profile.username || null,
+      avatar: profile.avatar_url || null,
+      email: profile.email || null,
+      accessToken,
+      refreshToken: tokenResponse.data?.refresh_token || null,
+      rawProfile: profile,
+    }
+  }
+
+  /**
+   * 统一回调：根据 query.type（彩虹）或 state.provider（Linux.Do / NodeLoc）路由到对应 Provider。
+   */
+  async resolveCallbackProfile(input: {
+    code: string
+    state?: string
+    type?: unknown
+    req: Request
+  }): Promise<OAuthProfile> {
+    if (input.type) {
+      return this.fetchRainbowProfile({ code: input.code, type: input.type })
+    }
+
+    if (!input.state) {
+      // 兼容旧版仅 Linux.Do 的无 state 回调
+      return this.fetchLinuxDoProfile({ code: input.code, req: input.req })
+    }
+
+    const state = jwt.verify(input.state, getJwtSecret()) as { scope?: string; provider?: string }
+    if (state.scope !== 'oauth_state' || !state.provider || !isOAuthStateProvider(state.provider)) {
+      throw new Error('Invalid oauth state')
+    }
+
+    if (state.provider === 'nodeloc') {
+      return this.fetchNodelocProfile({ code: input.code, state: input.state, req: input.req })
+    }
+    if (state.provider === 'linux_do') {
+      return this.fetchLinuxDoProfile({ code: input.code, state: input.state, req: input.req })
+    }
+
+    throw new Error(`不支持的 OAuth provider: ${state.provider}`)
   }
 
   async buildRainbowLoginUrl(req: Request, rawType: unknown) {

@@ -1,7 +1,7 @@
 import service from '@/api/request'
 import type { registerData, loginData, emailLoginData, resetPasswordData } from '@/types/user'
 
-export type OAuthProvider = 'linux_do' | 'rainbow'
+export type OAuthProvider = 'linux_do' | 'nodeloc' | 'rainbow'
 
 export type OAuthProfile = {
     provider: OAuthProvider

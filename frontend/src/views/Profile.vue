@@ -152,27 +152,32 @@ function oauthLoginUrl(path: string) {
   return `${getApiBaseUrl()}${path}`
 }
 
-function startOAuthBind(provider: 'linux_do' | 'rainbow', type?: string) {
+function startOAuthBind(provider: 'linux_do' | 'nodeloc' | 'rainbow', type?: string) {
   const path = provider === 'linux_do'
     ? '/auth/oauth/linux-do/login?redirect=1'
-    : `/auth/oauth/rainbow/${encodeURIComponent(type || '')}/login?redirect=1`
+    : provider === 'nodeloc'
+      ? '/auth/oauth/nodeloc/login?redirect=1'
+      : `/auth/oauth/rainbow/${encodeURIComponent(type || '')}/login?redirect=1`
   sessionStorage.setItem('moments_oauth_return_path', `${window.location.pathname}${window.location.search}${window.location.hash}` || '/profile')
   sessionStorage.setItem('moments_oauth_bind_current', '1')
   window.location.href = oauthLoginUrl(path)
 }
 
 const hasLinuxDo = computed(() => oauthAccounts.value.some(account => account.provider === 'linux_do'))
+const hasNodeloc = computed(() => oauthAccounts.value.some(account => account.provider === 'nodeloc'))
 function hasRainbowType(type: string) {
   return oauthAccounts.value.some(account => account.provider === 'rainbow' && account.providerType === type)
 }
 const rainbowTypes = computed(() => String(defaultStore.configs.rainbow_oauth2_type || '').split(',').map(item => item.trim()).filter(Boolean))
 function oauthDisplayName(account: OAuthAccount) {
   if (account.provider === 'linux_do') return 'Linux.Do'
+  if (account.provider === 'nodeloc') return 'NodeLoc'
   if (account.provider === 'rainbow') return `${(account.providerType || '彩虹').toUpperCase()} 登录`
   return account.provider
 }
 function oauthAccountIcon(account: OAuthAccount) {
   if (account.provider === 'linux_do') return '/img/linux_do.png'
+  if (account.provider === 'nodeloc') return '/img/nodeloc.png'
   if (account.provider === 'rainbow' && ['qq', 'wx', 'alipay'].includes(account.providerType || '')) {
     return `/img/${account.providerType}.svg`
   }
@@ -373,6 +378,13 @@ onUnmounted(() => {
           >
             <img :src="'/img/linux_do.png'" alt="">绑定 Linux.Do
           </button>
+          <button
+            v-if="defaultStore.configs.nodeloc_oauth2 === '1' && !hasNodeloc"
+            class="oauth-bind-btn"
+            @click="startOAuthBind('nodeloc')"
+          >
+            <img :src="'/img/nodeloc.png'" alt="">绑定 NodeLoc
+          </button>
           <template v-if="defaultStore.configs.rainbow_oauth2 === '1'">
             <button
               v-for="type in rainbowTypes"
@@ -502,7 +514,8 @@ onUnmounted(() => {
 .oauth-account-name img {
   width: 18px;
   height: 18px;
-  object-fit: contain;
+  border-radius: 50%;
+  object-fit: cover;
 }
 
 .oauth-account small,
@@ -536,7 +549,8 @@ onUnmounted(() => {
 .oauth-bind-btn img {
   width: 18px;
   height: 18px;
-  object-fit: contain;
+  border-radius: 50%;
+  object-fit: cover;
 }
 
 .oauth-bind-btn:hover {

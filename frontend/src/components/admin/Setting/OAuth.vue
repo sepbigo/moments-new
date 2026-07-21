@@ -15,6 +15,17 @@ const fields: ConfigFieldSchema[] = [
   { key: 'linux_do_client_id', placeholder: 'Linux.Do OAuth Client ID' },
   { key: 'linux_do_client_secret', type: 'password' as const, placeholder: 'Linux.Do OAuth Client Secret' },
   {
+    key: 'nodeloc_oauth2',
+    type: 'switch' as const,
+    trueValue: '1',
+    falseValue: '0',
+    trueText: '已启用',
+    falseText: '已关闭',
+  },
+  { key: 'nodeloc_url', placeholder: 'https://www.nodeloc.com' },
+  { key: 'nodeloc_client_id', placeholder: 'NodeLoc OAuth Client ID' },
+  { key: 'nodeloc_client_secret', type: 'password' as const, placeholder: 'NodeLoc OAuth Client Secret' },
+  {
     key: 'rainbow_oauth2',
     type: 'switch' as const,
     trueValue: '1',
@@ -32,7 +43,7 @@ const fields: ConfigFieldSchema[] = [
 <template>
   <ConfigForm
     title="OAuth 登录"
-    description="配置统一回调 URI、Linux.Do 与彩虹聚合登录。启用后，公开配置会控制前台登录弹窗显示对应入口；密钥类配置仅管理员可见。"
+    description="配置统一回调 URI、Linux.Do、NodeLoc 与彩虹聚合登录。启用后，公开配置会控制前台登录弹窗显示对应入口；密钥类配置仅管理员可见。"
     category="oauth2"
     :fields="fields"
   />
