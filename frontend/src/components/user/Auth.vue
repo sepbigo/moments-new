@@ -96,7 +96,9 @@ onUnmounted(() => {
     window.removeEventListener('message', handleOAuthMessage)
 })
 
-const oauthEnabled = () => defaultStore.configs.linux_do_oauth2 === '1' || defaultStore.configs.rainbow_oauth2 === '1'
+const oauthEnabled = () => defaultStore.configs.linux_do_oauth2 === '1'
+    || defaultStore.configs.nodeloc_oauth2 === '1'
+    || defaultStore.configs.rainbow_oauth2 === '1'
 const rainbowTypes = () => String(defaultStore.configs.rainbow_oauth2_type || '').split(',').map(item => item.trim()).filter(Boolean)
 const oauthOrigin = () => new URL(getApiBaseUrl() || window.location.origin, window.location.origin).origin
 const oauthLoginUrl = (path: string) => `${getApiBaseUrl()}${path}`
@@ -181,10 +183,19 @@ function consumeStoredOAuthResult() {
     }
 }
 
-const startOAuthLogin = (provider: 'linux_do' | 'rainbow', type?: string) => {
+const oauthProviderLabel = (provider?: string | null, providerType?: string | null) => {
+    if (provider === 'linux_do') return 'Linux.Do'
+    if (provider === 'nodeloc') return 'NodeLoc'
+    if (provider === 'rainbow') return (providerType || '彩虹').toUpperCase()
+    return provider || '三方账号'
+}
+
+const startOAuthLogin = (provider: 'linux_do' | 'nodeloc' | 'rainbow', type?: string) => {
     const path = provider === 'linux_do'
         ? '/auth/oauth/linux-do/login?redirect=1'
-        : `/auth/oauth/rainbow/${encodeURIComponent(type || '')}/login?redirect=1`
+        : provider === 'nodeloc'
+            ? '/auth/oauth/nodeloc/login?redirect=1'
+            : `/auth/oauth/rainbow/${encodeURIComponent(type || '')}/login?redirect=1`
     sessionStorage.setItem(OAUTH_RETURN_PATH_KEY, `${window.location.pathname}${window.location.search}${window.location.hash}` || '/')
     window.location.href = oauthLoginUrl(path)
 }
@@ -510,6 +521,15 @@ const handleResetPassword = async () => {
                     >
                         <img src="/img/linux_do.png" alt="">
                     </button>
+                    <button
+                        v-if="defaultStore.configs.nodeloc_oauth2 === '1'"
+                        class="oauth-icon nodeloc"
+                        title="NodeLoc 快捷登录"
+                        aria-label="NodeLoc 快捷登录"
+                        @click="startOAuthLogin('nodeloc')"
+                    >
+                        <img src="/img/nodeloc.png" alt="">
+                    </button>
                     <template v-if="defaultStore.configs.rainbow_oauth2 === '1'">
                         <button
                             v-for="type in rainbowTypes()"
@@ -631,7 +651,7 @@ const handleResetPassword = async () => {
                 <img v-if="oauthProfile.avatar" :src="oauthProfile.avatar" alt="OAuth 头像">
                 <div>
                     <strong>{{ oauthProfile.nickname || '三方账号' }}</strong>
-                    <span>{{ oauthProfile.provider === 'linux_do' ? 'Linux.Do' : oauthProfile.providerType?.toUpperCase() }}</span>
+                    <span>{{ oauthProviderLabel(oauthProfile.provider, oauthProfile.providerType) }}</span>
                 </div>
             </div>
             <div class="oauth-confirm-card">
@@ -662,7 +682,7 @@ const handleResetPassword = async () => {
                 <img v-if="oauthProfile.avatar" :src="oauthProfile.avatar" alt="OAuth 头像">
                 <div>
                     <strong>{{ oauthProfile.nickname || '三方账号' }}</strong>
-                    <span>{{ oauthProfile.provider === 'linux_do' ? 'Linux.Do' : oauthProfile.providerType?.toUpperCase() }}</span>
+                    <span>{{ oauthProviderLabel(oauthProfile.provider, oauthProfile.providerType) }}</span>
                 </div>
             </div>
             <div class="bind-actions">
@@ -718,7 +738,7 @@ const handleResetPassword = async () => {
                 <button @click="handleOAuthRegisterBind">创建并绑定</button>
             </div>
             <div class="footer">
-                <span @click="show = 'showLogin'">已有账号？先登录</span> | <span @click="startOAuthLogin('linux_do')">重新授权</span>
+                <span @click="show = 'showLogin'">已有账号？先登录</span> | <span @click="startOAuthLogin(oauthProfile?.provider === 'nodeloc' ? 'nodeloc' : oauthProfile?.provider === 'rainbow' ? 'rainbow' : 'linux_do', oauthProfile?.providerType || undefined)">重新授权</span>
             </div>
         </div>
 
@@ -989,7 +1009,8 @@ const handleResetPassword = async () => {
 .oauth-icon img {
     width: 24px;
     height: 24px;
-    object-fit: contain;
+    border-radius: 50%;
+    object-fit: cover;
 }
 
 .oauth-icon:hover:not(:disabled) {
