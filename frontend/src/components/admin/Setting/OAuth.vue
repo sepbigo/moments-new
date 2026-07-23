@@ -26,6 +26,26 @@ const fields: ConfigFieldSchema[] = [
   { key: 'nodeloc_client_id', placeholder: 'NodeLoc OAuth Client ID' },
   { key: 'nodeloc_client_secret', type: 'password' as const, placeholder: 'NodeLoc OAuth Client Secret' },
   {
+    key: 'google_oauth2',
+    type: 'switch' as const,
+    trueValue: '1',
+    falseValue: '0',
+    trueText: '已启用',
+    falseText: '已关闭',
+  },
+  { key: 'google_client_id', placeholder: 'Google OAuth Client ID' },
+  { key: 'google_client_secret', type: 'password' as const, placeholder: 'Google OAuth Client Secret' },
+  {
+    key: 'github_oauth2',
+    type: 'switch' as const,
+    trueValue: '1',
+    falseValue: '0',
+    trueText: '已启用',
+    falseText: '已关闭',
+  },
+  { key: 'github_client_id', placeholder: 'GitHub OAuth Client ID' },
+  { key: 'github_client_secret', type: 'password' as const, placeholder: 'GitHub OAuth Client Secret' },
+  {
     key: 'rainbow_oauth2',
     type: 'switch' as const,
     trueValue: '1',
@@ -43,7 +63,7 @@ const fields: ConfigFieldSchema[] = [
 <template>
   <ConfigForm
     title="OAuth 登录"
-    description="配置统一回调 URI、Linux.Do、NodeLoc 与彩虹聚合登录。启用后，公开配置会控制前台登录弹窗显示对应入口；密钥类配置仅管理员可见。"
+    description="配置统一回调 URI、Linux.Do、NodeLoc、Google、GitHub 与彩虹聚合登录。启用后，公开配置会控制前台登录弹窗显示对应入口；密钥类配置仅管理员可见。"
     category="oauth2"
     :fields="fields"
   />

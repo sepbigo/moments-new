@@ -152,12 +152,16 @@ function oauthLoginUrl(path: string) {
   return `${getApiBaseUrl()}${path}`
 }
 
-function startOAuthBind(provider: 'linux_do' | 'nodeloc' | 'rainbow', type?: string) {
+function startOAuthBind(provider: 'linux_do' | 'nodeloc' | 'rainbow' | 'google' | 'github', type?: string) {
   const path = provider === 'linux_do'
     ? '/auth/oauth/linux-do/login?redirect=1'
     : provider === 'nodeloc'
       ? '/auth/oauth/nodeloc/login?redirect=1'
-      : `/auth/oauth/rainbow/${encodeURIComponent(type || '')}/login?redirect=1`
+      : provider === 'google'
+        ? '/auth/oauth/google/login?redirect=1'
+        : provider === 'github'
+          ? '/auth/oauth/github/login?redirect=1'
+          : `/auth/oauth/rainbow/${encodeURIComponent(type || '')}/login?redirect=1`
   sessionStorage.setItem('moments_oauth_return_path', `${window.location.pathname}${window.location.search}${window.location.hash}` || '/profile')
   sessionStorage.setItem('moments_oauth_bind_current', '1')
   window.location.href = oauthLoginUrl(path)
@@ -165,6 +169,8 @@ function startOAuthBind(provider: 'linux_do' | 'nodeloc' | 'rainbow', type?: str
 
 const hasLinuxDo = computed(() => oauthAccounts.value.some(account => account.provider === 'linux_do'))
 const hasNodeloc = computed(() => oauthAccounts.value.some(account => account.provider === 'nodeloc'))
+const hasGoogle = computed(() => oauthAccounts.value.some(account => account.provider === 'google'))
+const hasGithub = computed(() => oauthAccounts.value.some(account => account.provider === 'github'))
 function hasRainbowType(type: string) {
   return oauthAccounts.value.some(account => account.provider === 'rainbow' && account.providerType === type)
 }
@@ -172,12 +178,16 @@ const rainbowTypes = computed(() => String(defaultStore.configs.rainbow_oauth2_t
 function oauthDisplayName(account: OAuthAccount) {
   if (account.provider === 'linux_do') return 'Linux.Do'
   if (account.provider === 'nodeloc') return 'NodeLoc'
+  if (account.provider === 'google') return 'Google'
+  if (account.provider === 'github') return 'GitHub'
   if (account.provider === 'rainbow') return `${(account.providerType || '彩虹').toUpperCase()} 登录`
   return account.provider
 }
 function oauthAccountIcon(account: OAuthAccount) {
   if (account.provider === 'linux_do') return '/img/linux_do.png'
   if (account.provider === 'nodeloc') return '/img/nodeloc.png'
+  if (account.provider === 'google') return '/img/google.svg'
+  if (account.provider === 'github') return '/img/github.svg'
   if (account.provider === 'rainbow' && ['qq', 'wx', 'alipay'].includes(account.providerType || '')) {
     return `/img/${account.providerType}.svg`
   }
@@ -384,6 +394,20 @@ onUnmounted(() => {
             @click="startOAuthBind('nodeloc')"
           >
             <img :src="'/img/nodeloc.png'" alt="">绑定 NodeLoc
+          </button>
+          <button
+            v-if="defaultStore.configs.google_oauth2 === '1' && !hasGoogle"
+            class="oauth-bind-btn"
+            @click="startOAuthBind('google')"
+          >
+            <img :src="'/img/google.svg'" alt="">绑定 Google
+          </button>
+          <button
+            v-if="defaultStore.configs.github_oauth2 === '1' && !hasGithub"
+            class="oauth-bind-btn"
+            @click="startOAuthBind('github')"
+          >
+            <img :src="'/img/github.svg'" alt="">绑定 GitHub
           </button>
           <template v-if="defaultStore.configs.rainbow_oauth2 === '1'">
             <button

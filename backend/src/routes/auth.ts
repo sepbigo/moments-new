@@ -339,6 +339,62 @@ router.get('/oauth/nodeloc/callback', async (req: Request, res: Response) => {
     }
 })
 
+router.get('/oauth/google/login', async (req: Request, res: Response) => {
+    try {
+        const url = await oauthService.buildGoogleAuthorizeUrl(req)
+        if (req.query.redirect === '1') {
+            return res.redirect(url)
+        }
+        return res.status(200).json({ url })
+    } catch (error) {
+        authLogger.warn(error instanceof Error ? error.message : 'Google OAuth 发起失败')
+        return res.status(400).json({ error: error instanceof Error ? error.message : 'Google OAuth 发起失败' })
+    }
+})
+
+router.get('/oauth/google/callback', async (req: Request, res: Response) => {
+    try {
+        const code = String(req.query.code || '')
+        const state = typeof req.query.state === 'string' ? req.query.state : undefined
+        if (!code) return res.status(400).json({ error: '缺少授权码' })
+
+        const profile = await oauthService.fetchGoogleProfile({ code, state, req })
+        const result = await oauthService.loginOrCreateTicket(profile, req)
+        return sendOAuthResult(req, res, result)
+    } catch (error) {
+        authLogger.error('Google OAuth 回调失败', error instanceof Error ? error.stack : String(error))
+        return res.status(400).json({ error: error instanceof Error ? error.message : 'Google OAuth 回调失败' })
+    }
+})
+
+router.get('/oauth/github/login', async (req: Request, res: Response) => {
+    try {
+        const url = await oauthService.buildGithubAuthorizeUrl(req)
+        if (req.query.redirect === '1') {
+            return res.redirect(url)
+        }
+        return res.status(200).json({ url })
+    } catch (error) {
+        authLogger.warn(error instanceof Error ? error.message : 'GitHub OAuth 发起失败')
+        return res.status(400).json({ error: error instanceof Error ? error.message : 'GitHub OAuth 发起失败' })
+    }
+})
+
+router.get('/oauth/github/callback', async (req: Request, res: Response) => {
+    try {
+        const code = String(req.query.code || '')
+        const state = typeof req.query.state === 'string' ? req.query.state : undefined
+        if (!code) return res.status(400).json({ error: '缺少授权码' })
+
+        const profile = await oauthService.fetchGithubProfile({ code, state, req })
+        const result = await oauthService.loginOrCreateTicket(profile, req)
+        return sendOAuthResult(req, res, result)
+    } catch (error) {
+        authLogger.error('GitHub OAuth 回调失败', error instanceof Error ? error.stack : String(error))
+        return res.status(400).json({ error: error instanceof Error ? error.message : 'GitHub OAuth 回调失败' })
+    }
+})
+
 router.get('/oauth/rainbow/:type/login', async (req: Request, res: Response) => {
     try {
         const result = await oauthService.buildRainbowLoginUrl(req, req.params.type)
