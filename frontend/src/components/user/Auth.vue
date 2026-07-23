@@ -3,7 +3,7 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import type { emailLoginData, loginData, registerData, resetPasswordData } from '@/types/user'
 import { useUserStore } from '@/store/user'
 import { useMessageStore } from '@/store/message'
-import { bindOAuthAccount, getApiBaseUrl, register, registerAndBindOAuth, resetPassword, sendEmailCode, type OAuthCallbackPayload, type OAuthProfile } from '@/api/auth'
+import { bindOAuthAccount, getApiBaseUrl, register, registerAndBindOAuth, resetPassword, sendEmailCode, type OAuthCallbackPayload, type OAuthProfile, type OAuthProvider } from '@/api/auth'
 import router from '@/router'
 import { UserRegular, Fingerprint, EnvelopeRegular, Times, ShieldAlt, EyeRegular, EyeSlashRegular } from '@vicons/fa'
 import { Icon } from '@vicons/utils'
@@ -98,6 +98,8 @@ onUnmounted(() => {
 
 const oauthEnabled = () => defaultStore.configs.linux_do_oauth2 === '1'
     || defaultStore.configs.nodeloc_oauth2 === '1'
+    || defaultStore.configs.google_oauth2 === '1'
+    || defaultStore.configs.github_oauth2 === '1'
     || defaultStore.configs.rainbow_oauth2 === '1'
 const rainbowTypes = () => String(defaultStore.configs.rainbow_oauth2_type || '').split(',').map(item => item.trim()).filter(Boolean)
 const oauthOrigin = () => new URL(getApiBaseUrl() || window.location.origin, window.location.origin).origin
@@ -186,18 +188,23 @@ function consumeStoredOAuthResult() {
 const oauthProviderLabel = (provider?: string | null, providerType?: string | null) => {
     if (provider === 'linux_do') return 'Linux.Do'
     if (provider === 'nodeloc') return 'NodeLoc'
+    if (provider === 'google') return 'Google'
+    if (provider === 'github') return 'GitHub'
     if (provider === 'rainbow') return (providerType || '彩虹').toUpperCase()
     return provider || '三方账号'
 }
 
-const startOAuthLogin = (provider: 'linux_do' | 'nodeloc' | 'rainbow', type?: string) => {
-    const path = provider === 'linux_do'
-        ? '/auth/oauth/linux-do/login?redirect=1'
-        : provider === 'nodeloc'
-            ? '/auth/oauth/nodeloc/login?redirect=1'
-            : `/auth/oauth/rainbow/${encodeURIComponent(type || '')}/login?redirect=1`
+const oauthLoginPath = (provider: OAuthProvider, type?: string) => {
+    if (provider === 'linux_do') return '/auth/oauth/linux-do/login?redirect=1'
+    if (provider === 'nodeloc') return '/auth/oauth/nodeloc/login?redirect=1'
+    if (provider === 'google') return '/auth/oauth/google/login?redirect=1'
+    if (provider === 'github') return '/auth/oauth/github/login?redirect=1'
+    return `/auth/oauth/rainbow/${encodeURIComponent(type || '')}/login?redirect=1`
+}
+
+const startOAuthLogin = (provider: OAuthProvider, type?: string) => {
     sessionStorage.setItem(OAUTH_RETURN_PATH_KEY, `${window.location.pathname}${window.location.search}${window.location.hash}` || '/')
-    window.location.href = oauthLoginUrl(path)
+    window.location.href = oauthLoginUrl(oauthLoginPath(provider, type))
 }
 
 const bindOAuthToCurrentUser = async () => {
@@ -530,6 +537,24 @@ const handleResetPassword = async () => {
                     >
                         <img src="/img/nodeloc.png" alt="">
                     </button>
+                    <button
+                        v-if="defaultStore.configs.google_oauth2 === '1'"
+                        class="oauth-icon google"
+                        title="Google 快捷登录"
+                        aria-label="Google 快捷登录"
+                        @click="startOAuthLogin('google')"
+                    >
+                        <img src="/img/google.svg" alt="">
+                    </button>
+                    <button
+                        v-if="defaultStore.configs.github_oauth2 === '1'"
+                        class="oauth-icon github"
+                        title="GitHub 快捷登录"
+                        aria-label="GitHub 快捷登录"
+                        @click="startOAuthLogin('github')"
+                    >
+                        <img src="/img/github.svg" alt="">
+                    </button>
                     <template v-if="defaultStore.configs.rainbow_oauth2 === '1'">
                         <button
                             v-for="type in rainbowTypes()"
@@ -738,7 +763,7 @@ const handleResetPassword = async () => {
                 <button @click="handleOAuthRegisterBind">创建并绑定</button>
             </div>
             <div class="footer">
-                <span @click="show = 'showLogin'">已有账号？先登录</span> | <span @click="startOAuthLogin(oauthProfile?.provider === 'nodeloc' ? 'nodeloc' : oauthProfile?.provider === 'rainbow' ? 'rainbow' : 'linux_do', oauthProfile?.providerType || undefined)">重新授权</span>
+                <span @click="show = 'showLogin'">已有账号？先登录</span> | <span @click="startOAuthLogin((oauthProfile?.provider || 'linux_do') as OAuthProvider, oauthProfile?.providerType || undefined)">重新授权</span>
             </div>
         </div>
 

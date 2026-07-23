@@ -8,7 +8,7 @@ import { Logger } from '../utils/logger.js'
 
 const logger = new Logger('OAuthService')
 
-export type OAuthProvider = 'linux_do' | 'nodeloc' | 'rainbow'
+export type OAuthProvider = 'linux_do' | 'nodeloc' | 'rainbow' | 'google' | 'github'
 
 export type OAuthProfile = {
   provider: OAuthProvider
@@ -52,6 +52,13 @@ const LINUX_DO_TOKEN_URL = 'https://connect.linux.do/oauth2/token'
 const LINUX_DO_USERINFO_URL = 'https://connect.linux.do/api/user'
 const DEFAULT_NODELOC_URL = 'https://www.nodeloc.com'
 const DEFAULT_RAINBOW_CONNECT_URL = 'https://u.xiaobaixuan.com/connect.php'
+const GOOGLE_AUTHORIZE_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
+const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token'
+const GOOGLE_USERINFO_URL = 'https://openidconnect.googleapis.com/v1/userinfo'
+const GITHUB_AUTHORIZE_URL = 'https://github.com/login/oauth/authorize'
+const GITHUB_TOKEN_URL = 'https://github.com/login/oauth/access_token'
+const GITHUB_USERINFO_URL = 'https://api.github.com/user'
+const GITHUB_EMAILS_URL = 'https://api.github.com/user/emails'
 const OAUTH_TICKET_EXPIRES_SECONDS = 10 * 60
 
 function getJwtSecret() {
@@ -90,7 +97,11 @@ async function getNodelocBaseUrl() {
 }
 
 function isOAuthStateProvider(provider: string): provider is OAuthProvider {
-  return provider === 'linux_do' || provider === 'nodeloc' || provider === 'rainbow'
+  return provider === 'linux_do'
+    || provider === 'nodeloc'
+    || provider === 'rainbow'
+    || provider === 'google'
+    || provider === 'github'
 }
 
 export class OAuthService {
@@ -257,8 +268,177 @@ export class OAuthService {
     }
   }
 
+  async buildGoogleAuthorizeUrl(req: Request) {
+    const enabled = await getConfigValue('google_oauth2')
+    if (enabled !== '1') throw new Error('Google OAuth 未启用')
+
+    const clientId = await getConfigValue('google_client_id')
+    if (!clientId) throw new Error('Google OAuth Client ID 未配置')
+
+    const configuredRedirectUri = await getConfigValue('oauth2_redirect_uri')
+    const redirectUri = configuredRedirectUri || buildCallbackUrl(req, '/api/auth/callback')
+    const state = jwt.sign({ scope: 'oauth_state', provider: 'google' }, getJwtSecret(), { expiresIn: 10 * 60 })
+
+    const url = new URL(GOOGLE_AUTHORIZE_URL)
+    url.searchParams.set('client_id', clientId)
+    url.searchParams.set('redirect_uri', redirectUri)
+    url.searchParams.set('response_type', 'code')
+    url.searchParams.set('scope', 'openid email profile')
+    url.searchParams.set('state', state)
+    url.searchParams.set('access_type', 'online')
+    url.searchParams.set('prompt', 'select_account')
+    return url.toString()
+  }
+
+  async fetchGoogleProfile(input: { code: string; state?: string; req: Request }): Promise<OAuthProfile> {
+    if (input.state) {
+      const state = jwt.verify(input.state, getJwtSecret()) as { scope?: string; provider?: string }
+      if (state.scope !== 'oauth_state' || state.provider !== 'google') {
+        throw new Error('Invalid oauth state')
+      }
+    }
+
+    const clientId = await getConfigValue('google_client_id')
+    const clientSecret = await getConfigValue('google_client_secret')
+    const configuredRedirectUri = await getConfigValue('oauth2_redirect_uri')
+    const redirectUri = configuredRedirectUri || buildCallbackUrl(input.req, '/api/auth/callback')
+    if (!clientId || !clientSecret) throw new Error('Google OAuth 未完整配置')
+
+    const tokenResponse = await axios.post(GOOGLE_TOKEN_URL, new URLSearchParams({
+      grant_type: 'authorization_code',
+      code: input.code,
+      redirect_uri: redirectUri,
+      client_id: clientId,
+      client_secret: clientSecret,
+    }), {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      timeout: 10000,
+    })
+
+    const accessToken = String(tokenResponse.data?.access_token || '')
+    if (!accessToken) throw new Error('Google OAuth 未返回 access_token')
+
+    const userResponse = await axios.get(GOOGLE_USERINFO_URL, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      timeout: 10000,
+    })
+    const profile = userResponse.data ?? {}
+    const providerUserId = String(profile.sub || '')
+    if (!providerUserId) throw new Error('Google OAuth 未返回用户标识')
+
+    return {
+      provider: 'google',
+      providerType: null,
+      providerUserId,
+      nickname: profile.name || profile.given_name || profile.email || null,
+      avatar: profile.picture || null,
+      email: profile.email || null,
+      accessToken,
+      refreshToken: tokenResponse.data?.refresh_token || null,
+      rawProfile: profile,
+    }
+  }
+
+  async buildGithubAuthorizeUrl(req: Request) {
+    const enabled = await getConfigValue('github_oauth2')
+    if (enabled !== '1') throw new Error('GitHub OAuth 未启用')
+
+    const clientId = await getConfigValue('github_client_id')
+    if (!clientId) throw new Error('GitHub OAuth Client ID 未配置')
+
+    const configuredRedirectUri = await getConfigValue('oauth2_redirect_uri')
+    const redirectUri = configuredRedirectUri || buildCallbackUrl(req, '/api/auth/callback')
+    const state = jwt.sign({ scope: 'oauth_state', provider: 'github' }, getJwtSecret(), { expiresIn: 10 * 60 })
+
+    const url = new URL(GITHUB_AUTHORIZE_URL)
+    url.searchParams.set('client_id', clientId)
+    url.searchParams.set('redirect_uri', redirectUri)
+    url.searchParams.set('scope', 'read:user user:email')
+    url.searchParams.set('state', state)
+    url.searchParams.set('allow_signup', 'true')
+    return url.toString()
+  }
+
+  async fetchGithubProfile(input: { code: string; state?: string; req: Request }): Promise<OAuthProfile> {
+    if (input.state) {
+      const state = jwt.verify(input.state, getJwtSecret()) as { scope?: string; provider?: string }
+      if (state.scope !== 'oauth_state' || state.provider !== 'github') {
+        throw new Error('Invalid oauth state')
+      }
+    }
+
+    const clientId = await getConfigValue('github_client_id')
+    const clientSecret = await getConfigValue('github_client_secret')
+    const configuredRedirectUri = await getConfigValue('oauth2_redirect_uri')
+    const redirectUri = configuredRedirectUri || buildCallbackUrl(input.req, '/api/auth/callback')
+    if (!clientId || !clientSecret) throw new Error('GitHub OAuth 未完整配置')
+
+    const tokenResponse = await axios.post(GITHUB_TOKEN_URL, {
+      client_id: clientId,
+      client_secret: clientSecret,
+      code: input.code,
+      redirect_uri: redirectUri,
+    }, {
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      timeout: 10000,
+    })
+
+    const accessToken = String(tokenResponse.data?.access_token || '')
+    if (!accessToken) {
+      throw new Error(tokenResponse.data?.error_description || tokenResponse.data?.error || 'GitHub OAuth 未返回 access_token')
+    }
+
+    const userResponse = await axios.get(GITHUB_USERINFO_URL, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'moments-oauth',
+      },
+      timeout: 10000,
+    })
+    const profile = userResponse.data ?? {}
+    const providerUserId = String(profile.id ?? '')
+    if (!providerUserId) throw new Error('GitHub OAuth 未返回用户标识')
+
+    let email: string | null = profile.email || null
+    if (!email) {
+      try {
+        const emailsResponse = await axios.get(GITHUB_EMAILS_URL, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Accept: 'application/vnd.github+json',
+            'User-Agent': 'moments-oauth',
+          },
+          timeout: 10000,
+        })
+        const emails = Array.isArray(emailsResponse.data) ? emailsResponse.data : []
+        const primaryVerified = emails.find((item: { primary?: boolean; verified?: boolean; email?: string }) => item.primary && item.verified && item.email)
+        const anyVerified = emails.find((item: { verified?: boolean; email?: string }) => item.verified && item.email)
+        const anyEmail = emails.find((item: { email?: string }) => item.email)
+        email = primaryVerified?.email || anyVerified?.email || anyEmail?.email || null
+      } catch (error) {
+        logger.warn('获取 GitHub 邮箱失败，将继续使用基础资料')
+      }
+    }
+
+    return {
+      provider: 'github',
+      providerType: null,
+      providerUserId,
+      nickname: profile.name || profile.login || null,
+      avatar: profile.avatar_url || null,
+      email,
+      accessToken,
+      refreshToken: tokenResponse.data?.refresh_token || null,
+      rawProfile: profile,
+    }
+  }
+
   /**
-   * 统一回调：根据 query.type（彩虹）或 state.provider（Linux.Do / NodeLoc）路由到对应 Provider。
+   * 统一回调：根据 query.type（彩虹）或 state.provider 路由到对应 Provider。
    */
   async resolveCallbackProfile(input: {
     code: string
@@ -285,6 +465,12 @@ export class OAuthService {
     }
     if (state.provider === 'linux_do') {
       return this.fetchLinuxDoProfile({ code: input.code, state: input.state, req: input.req })
+    }
+    if (state.provider === 'google') {
+      return this.fetchGoogleProfile({ code: input.code, state: input.state, req: input.req })
+    }
+    if (state.provider === 'github') {
+      return this.fetchGithubProfile({ code: input.code, state: input.state, req: input.req })
     }
 
     throw new Error(`不支持的 OAuth provider: ${state.provider}`)

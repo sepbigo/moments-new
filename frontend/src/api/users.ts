@@ -3,7 +3,7 @@ import type { updateUserInfoData, updatePasswordData } from '@/types/user'
 
 export type OAuthAccount = {
     id: string
-    provider: 'linux_do' | 'nodeloc' | 'rainbow' | string
+    provider: 'linux_do' | 'nodeloc' | 'rainbow' | 'google' | 'github' | string
     providerType?: string | null
     providerUserId: string
     nickname?: string | null
