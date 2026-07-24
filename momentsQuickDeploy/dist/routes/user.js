@@ -115,6 +115,39 @@ router.patch('/', authMiddleware, async (req, res) => {
         return res.status(500).json({ error: '服务器内部错误' });
     }
 });
+router.get('/oauth-accounts', authMiddleware, async (req, res) => {
+    try {
+        const userId = req.user?.userId;
+        if (!userId)
+            return res.status(401).json({ error: '未授权' });
+        const accounts = await prisma.user_oauth_accounts.findMany({
+            where: { user_id: BigInt(userId) },
+            select: {
+                id: true,
+                provider: true,
+                provider_type: true,
+                provider_user_id: true,
+                nickname: true,
+                avatar: true,
+                email: true,
+                last_login_at: true,
+                created_at: true,
+            },
+            orderBy: { created_at: 'desc' },
+        });
+        return res.status(200).json(accounts.map(account => ({
+            ...account,
+            id: account.id.toString(),
+            providerUserId: account.provider_user_id,
+            providerType: account.provider_type || null,
+            lastLoginAt: account.last_login_at,
+            createdAt: account.created_at,
+        })));
+    }
+    catch (error) {
+        return res.status(500).json({ error: '获取第三方账号绑定失败' });
+    }
+});
 // 根据用户名查询一些用户信息，主要id
 router.get('/:username', async (req, res) => {
     const { username } = req.params;

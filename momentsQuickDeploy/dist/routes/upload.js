@@ -102,6 +102,28 @@ async function localUploadMiddleware(req, res, next) {
         next(error);
     }
 }
+// 用户资料图片本地上传：只返回文件地址，不写入文章媒体表
+router.post('/profile', authMiddleware, localUploadMiddleware, async (req, res) => {
+    try {
+        const files = req.files;
+        if (!files || files.length === 0) {
+            return res.status(400).json({ status: false, message: '缺少文件' });
+        }
+        const invalidFile = files.find(file => !allowedImageTypes.includes(file.mimetype));
+        if (invalidFile) {
+            return res.status(400).json({ status: false, message: '用户资料仅支持上传图片' });
+        }
+        const filePaths = files.map(file => {
+            const relativePath = path.relative(publicRootPath, file.path);
+            return '/' + relativePath.split(path.sep).join('/');
+        });
+        return res.json({ status: true, message: `${filePaths.length}个文件上传成功`, paths: filePaths });
+    }
+    catch (error) {
+        logger.error('用户资料图片上传失败', error instanceof Error ? error.stack : String(error));
+        return res.status(500).json({ status: false, message: '上传失败' });
+    }
+});
 // 普通文件上传
 router.post('/', authMiddleware, localUploadMiddleware, async (req, res) => {
     // 上传文件信息
@@ -269,6 +291,30 @@ router.post('/s3', authMiddleware, s3Upload.array('files', fileNumber), (req: Re
     res.json({ status: true, message: `成功上传 ${filePaths.length} 个文件`, paths: filePaths })
 })
 */
+router.post('/profile/s3', authMiddleware, s3UploadMiddleware, async (req, res) => {
+    try {
+        const files = req.files;
+        if (!files || files.length === 0) {
+            return res.status(400).json({ status: false, message: '没有文件被上传' });
+        }
+        const invalidFile = files.find(file => !allowedImageTypes.includes(file.mimetype));
+        if (invalidFile) {
+            return res.status(400).json({ status: false, message: '用户资料仅支持上传图片' });
+        }
+        const configs = await getConfigCache();
+        const filePaths = files.map(file => {
+            const fileKey = file.key;
+            const s3Location = file.location;
+            const customDomain = configs.upload_s3_domain;
+            return customDomain ? `https://${customDomain}/${fileKey}` : s3Location;
+        });
+        return res.json({ status: true, message: `成功上传 ${filePaths.length} 个文件`, paths: filePaths });
+    }
+    catch (error) {
+        logger.error('用户资料 S3/R2 图片上传失败', error instanceof Error ? error.stack : String(error));
+        return res.status(500).json({ status: false, message: '上传失败' });
+    }
+});
 router.post('/s3', authMiddleware, s3UploadMiddleware, async (req, res) => {
     const files = req.files;
     const articleId = req.body.articleId;
