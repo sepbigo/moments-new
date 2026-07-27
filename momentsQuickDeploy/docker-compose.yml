@@ -4,10 +4,10 @@ services:
     container_name: moments-db
     restart: always
     environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: demo
-      MYSQL_USER: demo
-      MYSQL_PASSWORD: demo
+      MYSQL_ROOT_PASSWORD: bigbabyer
+      MYSQL_DATABASE: bigbabyer
+      MYSQL_USER: bigbabyer
+      MYSQL_PASSWORD: bigbabyer
     ports:
       - "13306:3306"
     volumes:
